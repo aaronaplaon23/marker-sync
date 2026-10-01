@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src https://*.dropboxusercontent.com; connect-src https://api.dropboxapi.com https://content.dropboxapi.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="theme-color" content="#0d1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Markers">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css?v=202610011427">
+<title>Marker Sync</title>
+</head>
+<body>
+
+<!-- Setup: no app key configured -->
+<section id="screen-setup" class="screen center-screen" hidden>
+  <div class="setup-card">
+    <h1>Marker Sync</h1>
+    <p class="muted">No Dropbox app key yet. Put it in <code>config.js</code> and redeploy.</p>
+  </div>
+</section>
+
+<!-- Connect Dropbox (one time) -->
+<section id="screen-connect" class="screen center-screen" hidden>
+  <div class="setup-card">
+    <h1>Marker Sync</h1>
+    <p class="muted">Mark clips on your phone, and they land in Premiere. Connect Dropbox once to get started.</p>
+    <ol class="steps">
+      <li>
+        <span class="step-label">Open Dropbox, tap Allow, then copy the code it shows.</span>
+        <a id="connect-link" class="btn btn-primary btn-block" href="#" target="_blank" rel="noopener" aria-disabled="true">Connect Dropbox</a>
+      </li>
+      <li>
+        <form id="connect-form" class="step-form" autocomplete="off">
+          <label class="step-label" for="connect-code">Paste the code here.</label>
+          <input id="connect-code" class="input" type="text" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Code from Dropbox" enterkeyhint="go">
+          <button id="connect-finish" class="btn btn-block" type="submit">Finish</button>
+        </form>
+      </li>
+    </ol>
+    <p id="connect-error" class="error-text" hidden></p>
+  </div>
+</section>
+
+<!-- Clip list -->
+<section id="screen-clips" class="screen" hidden>
+  <header class="bar">
+    <h1 class="bar-title">Clips</h1>
+    <div class="bar-actions">
+      <button id="clips-tags" class="btn btn-ghost" type="button">Tags</button>
+      <button id="clips-refresh" class="btn btn-ghost" type="button" aria-label="Refresh">Refresh</button>
+    </div>
+  </header>
+  <div id="clips-banner" class="banner" hidden></div>
+  <ul id="clips-list" class="clip-list"></ul>
+  <div id="clips-empty" class="empty-state" hidden>
+    <p class="empty-title">No clips yet</p>
+    <p class="muted">Drop a trimmed clip into <span id="watch-folder-label" class="mono"></span> on the PC. It shows up here when its phone copy is ready.</p>
+  </div>
+  <footer class="clips-foot">
+    <span id="clips-sync" class="sync" hidden></span>
+    <button id="sign-out" class="btn btn-ghost btn-small" type="button">Sign out</button>
+  </footer>
+</section>
+
+<!-- Marking workspace -->
+<section id="screen-clip" class="screen clip-screen" hidden>
+  <header class="bar">
+    <button id="clip-back" class="btn btn-ghost bar-back" type="button">Clips</button>
+    <h1 id="clip-title" class="bar-title bar-title-small"></h1>
+    <span id="clip-sync" class="sync"></span>
+  </header>
+  <div class="clip-top">
+    <div class="video-wrap">
+      <video id="video" playsinline webkit-playsinline preload="auto" disablepictureinpicture></video>
+      <div id="video-msg" class="video-msg" hidden></div>
+    </div>
+    <div class="transport">
+      <div class="times">
+        <span id="t-now" class="mono t-now">0:00.0</span>
+        <span id="t-dur" class="mono muted">0:00</span>
+      </div>
+      <div class="transport-row">
+        <button class="btn btn-key" type="button" data-skip="-10">-10</button>
+        <button class="btn btn-key" type="button" data-skip="-3">-3</button>
+        <button id="play" class="btn btn-key btn-play" type="button" aria-label="Play">Play</button>
+        <button class="btn btn-key" type="button" data-skip="3">+3</button>
+        <button class="btn btn-key" type="button" data-skip="10">+10</button>
+      </div>
+    </div>
+    <canvas id="wave-overview" class="wave wave-overview" aria-label="Whole clip mic waveform. Tap or drag to jump."></canvas>
+    <canvas id="wave-detail" class="wave wave-detail" aria-label="Zoomed mic waveform. Drag to scrub, tap to jump."></canvas>
+    <div class="action-row">
+      <div class="seg" role="group" aria-label="Zoom">
+        <button type="button" data-zoom="10">10s</button>
+        <button type="button" data-zoom="30">30s</button>
+        <button type="button" data-zoom="120">2m</button>
+        <button type="button" data-zoom="600">10m</button>
+      </div>
+      <button id="speed" class="btn btn-speed" type="button" aria-label="Playback speed">1x</button>
+      <button id="add" class="btn btn-add" type="button" aria-label="Add marker here">+ Marker</button>
+    </div>
+  </div>
+  <div class="markers-wrap">
+    <div class="markers-head">
+      <span>Markers</span>
+      <span id="marker-count" class="muted"></span>
+    </div>
+    <ul id="markers" class="marker-list"></ul>
+  </div>
+</section>
+
+<!-- Marker editor -->
+<div id="sheet-editor" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close="editor"></div>
+  <form id="editor-form" class="sheet-panel" autocomplete="off">
+    <div class="sheet-head">
+      <button id="ed-delete" class="btn btn-ghost btn-danger" type="button">Delete</button>
+      <span id="ed-time" class="mono sheet-title"></span>
+      <button id="ed-done" class="btn btn-primary" type="submit">Done</button>
+    </div>
+    <input id="ed-note" class="input" type="text" placeholder="What happened?" enterkeyhint="done" autocapitalize="sentences" maxlength="200">
+    <div class="tag-head">
+      <span class="muted small">Tag</span>
+    </div>
+    <div id="ed-tags" class="chips"></div>
+    <div id="ed-newtag" class="newtag" hidden>
+      <input id="ed-newtag-name" class="input" type="text" placeholder="Tag name, e.g. Funny Moments" maxlength="40" enterkeyhint="next">
+      <div class="newtag-row">
+        <input id="ed-newtag-suffix" class="input input-suffix" type="text" placeholder="Suffix, e.g. FM" maxlength="12" autocapitalize="characters" autocorrect="off" spellcheck="false" enterkeyhint="done">
+        <button id="ed-newtag-add" class="btn" type="button">Add tag</button>
+      </div>
+      <p id="ed-newtag-error" class="error-text" hidden></p>
+    </div>
+  </form>
+</div>
+
+<!-- Tag manager -->
+<div id="sheet-tags" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close="tags"></div>
+  <div class="sheet-panel">
+    <div class="sheet-head">
+      <span class="sheet-title">Tags</span>
+      <button id="tags-done" class="btn btn-primary" type="button">Done</button>
+    </div>
+    <p class="muted small">The suffix is added to the end of the marker name in Premiere: "Dies to zombie" tagged Funny Moments (FM) becomes "Dies to zombie FM".</p>
+    <form id="tags-form" class="newtag" autocomplete="off">
+      <input id="tags-name" class="input" type="text" placeholder="Tag name" maxlength="40" enterkeyhint="next">
+      <div class="newtag-row">
+        <input id="tags-suffix" class="input input-suffix" type="text" placeholder="Suffix" maxlength="12" autocapitalize="characters" autocorrect="off" spellcheck="false" enterkeyhint="done">
+        <button class="btn" type="submit">Add tag</button>
+      </div>
+      <p id="tags-error" class="error-text" hidden></p>
+    </form>
+    <ul id="tags-list" class="tag-list"></ul>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="config.js?v=202610011427"></script>
+<script src="app.js?v=202610011427"></script>
+</body>
+</html>
