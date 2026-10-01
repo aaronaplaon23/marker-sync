@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://player.twitch.tv; frame-src https://player.twitch.tv https://embed.twitch.tv; style-src 'self'; img-src 'self' data:">
+<meta name="theme-color" content="#0d1117">
+<link rel="stylesheet" href="style.css?v=1">
+<title>Twitch player test</title>
+</head>
+<body>
+<section class="screen">
+  <header class="bar"><h1 class="bar-title">Twitch player test</h1></header>
+  <div id="player" class="tt-player"></div>
+  <div class="transport">
+    <div class="times">
+      <span id="tt-now" class="mono t-now">--</span>
+      <span id="tt-state" class="muted">loading</span>
+    </div>
+    <div class="transport-row">
+      <button class="btn btn-key" type="button" data-skip="-10">-10</button>
+      <button id="tt-play" class="btn btn-key btn-play" type="button">Play</button>
+      <button id="tt-pause" class="btn btn-key" type="button">Pause</button>
+      <button class="btn btn-key" type="button" data-skip="10">+10</button>
+      <button id="tt-mark" class="btn btn-key btn-speed" type="button">Mark</button>
+    </div>
+  </div>
+  <div class="action-row">
+    <button id="tt-jump" class="btn" type="button">Jump to 1:20:00</button>
+    <button id="tt-360" class="btn" type="button">Use 360p</button>
+  </div>
+  <div class="markers-head"><span>What happened</span></div>
+  <ul id="tt-log" class="marker-list tt-log"></ul>
+</section>
+<script src="https://player.twitch.tv/js/embed/v1.js"></script>
+<script src="twitch-test.js?v=1"></script>
+</body>
+</html>
