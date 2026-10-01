@@ -7,7 +7,6 @@
   const CONTENT = CFG.contentBase || "https://content.dropboxapi.com";
   const AUTHORIZE = CFG.authorizeUrl || "https://www.dropbox.com/oauth2/authorize";
   const ZOOMS = [10, 30, 120, 600];
-  const SPEEDS = [1, 1.5, 2];
 
   /* ---------- helpers ---------- */
 
@@ -228,9 +227,6 @@
     },
     async meta(path) {
       try { return await this.rpc("files/get_metadata", { path }); } catch (e) { if (notFound(e)) return null; throw e; }
-    },
-    async tempLink(path) {
-      return (await this.rpc("files/get_temporary_link", { path })).link;
     },
     async remove(path) {
       try { await this.rpc("files/delete_v2", { path }); } catch (e) { if (!notFound(e)) throw e; }
@@ -558,7 +554,6 @@
 
   function showClips() {
     show("#screen-clips");
-    $("#watch-folder-label").textContent = CFG.watchFolderLabel || "the watch folder";
     renderSync();
     refreshClips();
   }
@@ -623,11 +618,11 @@
     const m = c.manifest;
     const s = c.status;
     if (m) {
-      const pf = c.files["proxy.mp4"];
       const wf = c.files["waveform.bin"];
-      const complete = pf && wf && pf.size === (m.proxy || {}).size && wf.size === (m.waveform || {}).size;
+      const twitch = m.twitch && Array.isArray(m.twitch.sync) && m.twitch.sync.length;
+      const complete = wf && wf.size === (m.waveform || {}).size;
       const stale = m.created && Date.now() - Date.parse(m.created) > 6 * 3600e3;
-      c.state = complete ? "ready" : stale ? "missing" : "uploading";
+      c.state = !twitch ? "old" : complete ? "ready" : stale ? "missing" : "uploading";
       c.name = stripExt(m.source_name) || c.id;
       c.duration = m.duration;
       c.created = m.created;
@@ -648,17 +643,21 @@
     ready: { cls: "state-ready", text: () => "Ready" },
     processing: {
       cls: "state-busy",
-      text: (c) => (c.progress ? `Processing on PC, ${Math.round(c.progress * 100)}%` : "Processing on PC"),
-      hint: "The PC is still making this clip's phone copy.",
+      text: (c) => (c.progress ? `Lining up on PC, ${Math.round(c.progress * 100)}%` : "Lining up on PC"),
+      hint: "The PC is still lining this clip up with its Twitch VOD.",
     },
     uploading: {
-      cls: "state-busy", text: () => "Uploading from PC",
-      hint: "Dropbox is still uploading the phone copy from the PC.",
+      cls: "state-busy", text: () => "Syncing from PC",
+      hint: "Dropbox is still bringing over the waveform from the PC.",
     },
-    failed: { cls: "state-failed", text: () => "Failed on PC", hint: "The PC couldn't make a phone copy of this clip." },
+    failed: { cls: "state-failed", text: () => "Failed on PC", hint: "The PC couldn't line this clip up. See the clip editor's Phone tab." },
     missing: {
-      cls: "state-failed", text: () => "No phone copy",
-      hint: "This clip's phone copy isn't in Dropbox. Its markers are still saved.",
+      cls: "state-failed", text: () => "Waveform missing",
+      hint: "This clip's waveform isn't in Dropbox. Send it again from the clip editor; its markers are still saved.",
+    },
+    old: {
+      cls: "state-failed", text: () => "Send again from the PC",
+      hint: "This clip was made by the old phone-copy version. Open the clip editor's Phone tab and send it again.",
     },
   };
 
@@ -702,15 +701,21 @@
   });
 
   /* ---------- marking workspace ---------- */
+  // The video plays from the Twitch VOD. Clip time is what the waveform,
+  // markers and Premiere use; VOD time is what the player uses. The manifest's
+  // sync map converts between them, stream drops included.
 
-  const video = $("#video");
   const ov = $("#wave-overview");
   const dt = $("#wave-detail");
   const octx = ov.getContext("2d");
   const dctx = dt.getContext("2d");
+  const playBtn = $("#play");
 
   const S = {
     clip: null,
+    vodId: null,
+    sync: [{ clip: 0, vod: 0 }],
+    vodDuration: 0,
     peaks: null,
     rate: 50,
     ref: 64,
@@ -718,50 +723,61 @@
     markers: [],
     markersError: null,
     zoom: 30,
-    speed: 1,
-    linkAt: 0,
-    wantPlay: false,
-    pendingSeek: null,
-    dragTime: null,
-    lastTime: 0,
+    quality: 480,
+    dragClip: null,
     posSaved: 0,
     openToken: 0,
   };
 
+  // Anchors [{clip, vod}]: from each anchor on, VOD = clip + (vod - clip) until
+  // the next one. Time that only one side has (a stream drop, or VOD time the
+  // clip lacks) snaps to the next anchor.
+  function clipToVod(c) {
+    const A = S.sync;
+    let k = 0;
+    for (let i = 0; i < A.length; i++) if (A[i].clip <= c) k = i;
+    let v = A[k].vod + (c - A[k].clip);
+    if (k + 1 < A.length && v > A[k + 1].vod) v = A[k + 1].vod;
+    return v;
+  }
+
+  function vodToClip(v) {
+    const A = S.sync;
+    let k = 0;
+    for (let i = 0; i < A.length; i++) if (A[i].vod <= v) k = i;
+    let c = A[k].clip + (v - A[k].vod);
+    if (k + 1 < A.length && c > A[k + 1].clip) c = A[k + 1].clip;
+    return c;
+  }
+
+  // Markers remember the VOD moment they were placed at, so a re-alignment on
+  // the PC moves them all with it.
+  const mClip = (m) => (typeof m.vod_time === "number" ? vodToClip(m.vod_time) : m.timestamp);
+
+  /* Twitch reports its position about once a second while playing, and not at
+     all after a seek while paused, so a +10 measured from what it reports lands
+     short. The app keeps its own clock: set on every seek, run by the wall
+     clock while playing, and nudged when Twitch's reports disagree (reports
+     right after a seek are stale, so those are ignored). */
+  const TP = {
+    player: null, ready: false, playing: false, starting: false, everPlayed: false,
+    base: 0, at: 0, guardUntil: 0, lastReport: null, offCount: 0, pendingSeek: null, hintTimer: 0,
+  };
+
+  const vodNow = () => (TP.playing ? TP.base + (performance.now() - TP.at) / 1000 : TP.base);
+
+  function setClock(v) {
+    TP.base = v;
+    TP.at = performance.now();
+  }
+
   function now() {
-    if (S.dragTime != null) return S.dragTime;
-    if (S.pendingSeek != null) return S.pendingSeek;
-    return video.currentTime || S.lastTime || 0;
+    return S.dragClip != null ? S.dragClip : vodToClip(vodNow());
   }
 
-  function clipEnd() {
-    return Number.isFinite(video.duration) && video.duration > 0 ? video.duration : S.duration;
-  }
-
-  function seek(t) {
-    t = clamp(Number(t) || 0, 0, Math.max(0, clipEnd() - 0.05));
-    if (video.readyState >= 1) video.currentTime = t;
-    else S.pendingSeek = t;
-    S.lastTime = t;
-    requestDraw();
-  }
-
-  let seekAt = 0;
-  let seekTimer = 0;
-  let seekWant = 0;
-  function seekSoon(t) {
-    seekWant = t;
-    const wait = 120 - (performance.now() - seekAt);
-    if (wait <= 0) {
-      seekAt = performance.now();
-      seek(seekWant);
-    } else if (!seekTimer) {
-      seekTimer = setTimeout(() => {
-        seekTimer = 0;
-        seekAt = performance.now();
-        if (S.dragTime != null) seek(seekWant);
-      }, wait);
-    }
+  function twitchTime(t) {
+    t = Math.max(0, Math.floor(t));
+    return `${Math.floor(t / 3600)}h${Math.floor((t % 3600) / 60)}m${t % 60}s`;
   }
 
   function videoMsg(text) {
@@ -770,70 +786,217 @@
     m.textContent = text || "";
   }
 
-  function setVideo(link, at, play) {
-    S.linkAt = Date.now();
-    S.pendingSeek = at;
-    S.wantPlay = play;
-    video.src = link;
-    video.load();
+  function showPlaying(on) {
+    playBtn.textContent = on ? "Pause" : "Play";
+    playBtn.setAttribute("aria-label", on ? "Pause" : "Play");
   }
 
-  async function refreshLink(play) {
-    if (!S.clip) return;
-    const clip = S.clip;
-    const at = now();
-    try {
-      const link = await dbx.tempLink(`${clip.folder}/proxy.mp4`);
-      if (S.clip === clip) setVideo(link, at, play);
-    } catch (e) {
-      if (S.clip === clip) videoMsg(errText(e));
+  function destroyPlayer() {
+    clearTimeout(TP.hintTimer);
+    $("#player").replaceChildren();
+    $("#player-hint").hidden = true;
+    Object.assign(TP, { player: null, ready: false, playing: false, starting: false, everPlayed: false,
+      lastReport: null, offCount: 0, pendingSeek: null });
+    showPlaying(false);
+  }
+
+  function createPlayer(startVod) {
+    destroyPlayer();
+    setClock(startVod);
+    const P = window.Twitch && window.Twitch.Player;
+    if (!P) {
+      videoMsg("The Twitch player didn't load. Check your connection, then reopen the clip.");
+      return;
+    }
+    // controls: false keeps Twitch's title, follow/sub buttons and bar off the
+    // video; the waveforms and buttons below do the controlling.
+    TP.player = new P("player", {
+      video: S.vodId, time: twitchTime(startVod), autoplay: false, controls: false,
+      width: "100%", height: "100%", parent: [location.hostname],
+    });
+    TP.pendingSeek = startVod;
+    TP.player.addEventListener(P.READY, () => {
+      TP.ready = true;
+      videoMsg(null);
+      if (TP.pendingSeek != null) {
+        TP.player.seek(TP.pendingSeek);
+        TP.pendingSeek = null;
+      }
+    });
+    TP.player.addEventListener(P.PLAY, () => {
+      TP.starting = true;
+      showPlaying(true);
+      requestDraw();
+    });
+    TP.player.addEventListener(P.PLAYING, onPlaying);
+    TP.player.addEventListener(P.PAUSE, onPaused);
+    if (P.ENDED) TP.player.addEventListener(P.ENDED, onPaused);
+  }
+
+  function onPlaying() {
+    clearTimeout(TP.hintTimer);
+    $("#player-hint").hidden = true;
+    if (!TP.playing) {
+      TP.playing = true;
+      setClock(TP.base);       // the clock starts when the picture does, not when play was pressed
+    }
+    TP.starting = false;
+    showPlaying(true);
+    if (!TP.everPlayed) {
+      TP.everPlayed = true;
+      setTimeout(applyQuality, 600);
+    }
+    requestDraw();
+  }
+
+  function onPaused() {
+    if (TP.playing) setClock(vodNow());
+    TP.playing = false;
+    TP.starting = false;
+    showPlaying(false);
+    requestDraw();
+  }
+
+  function playVideo() {
+    if (!TP.player) return;
+    TP.starting = true;
+    showPlaying(true);
+    try { TP.player.play(); } catch { /* not ready yet */ }
+    clearTimeout(TP.hintTimer);
+    // An iPhone may only let a tap on the video itself start it the first time.
+    TP.hintTimer = setTimeout(() => {
+      if (!TP.playing && TP.starting) $("#player-hint").hidden = false;
+    }, 2500);
+    requestDraw();
+  }
+
+  function pauseVideo() {
+    if (!TP.player) return;
+    onPaused();                // freeze the clock at the moment of the tap
+    try { TP.player.pause(); } catch { /* not ready yet */ }
+  }
+
+  function togglePlay() {
+    if (TP.playing || TP.starting) pauseVideo();
+    else playVideo();
+  }
+
+  function seekVod(v) {
+    const end = S.vodDuration ? S.vodDuration - 0.5 : Infinity;
+    v = clamp(Number(v) || 0, 0, end);
+    setClock(v);
+    TP.guardUntil = performance.now() + 2000;
+    TP.lastReport = null;
+    TP.offCount = 0;
+    if (TP.player && TP.ready) TP.player.seek(v);
+    else TP.pendingSeek = v;
+    requestDraw();
+  }
+
+  const seekClip = (c) => seekVod(clipToVod(clamp(c, 0, S.duration)));
+
+  function reconcile() {
+    if (!TP.player || !TP.ready || performance.now() < TP.guardUntil) return;
+    let r;
+    try { r = TP.player.getCurrentTime(); } catch { return; }
+    if (typeof r !== "number" || !Number.isFinite(r) || r === TP.lastReport) return;
+    const prev = TP.lastReport;
+    TP.lastReport = r;
+    if (!TP.playing) {
+      // Play was asked for and the time is moving, even without a PLAYING event.
+      if (TP.starting && prev !== null && r > prev + 0.2) {
+        setClock(r);
+        onPlaying();
+      }
+      return;
+    }
+    // Past the guard, a changed report is from after the seek (Twitch reports
+    // about every second), so it can correct the clock straight away.
+    const d = r - vodNow();
+    if (Math.abs(d) < 0.35) {
+      TP.offCount = 0;
+    } else if (Math.abs(d) < 5 || ++TP.offCount >= 3) {
+      setClock(r);              // small drift, or Twitch has insisted three times
+      TP.offCount = 0;
     }
   }
 
+  const QUALITIES = [480, 360, 0];    // 0 = Twitch's auto
+
+  function setQualityButton() {
+    $("#quality").textContent = S.quality ? `${S.quality}p` : "Auto";
+  }
+
+  function applyQuality() {
+    if (!TP.player || !TP.everPlayed) return;
+    let qs = [];
+    try { qs = TP.player.getQualities() || []; } catch { return; }
+    let pick = null;
+    if (!S.quality) {
+      pick = qs.find((q) => (q.group || q.name) === "auto");
+    } else {
+      const sized = qs.filter((q) => q.height);
+      pick = sized.filter((q) => q.height <= S.quality).sort((a, b) => b.height - a.height)[0]
+        || sized.sort((a, b) => a.height - b.height)[0];
+    }
+    if (pick) {
+      try { TP.player.setQuality(pick.group || pick.name); } catch { /* ignore */ }
+    }
+  }
+
+  $("#quality").addEventListener("click", () => {
+    S.quality = QUALITIES[(QUALITIES.indexOf(S.quality) + 1) % QUALITIES.length];
+    store.set("ms.quality", S.quality);
+    setQualityButton();
+    applyQuality();
+  });
+
   function savePos() {
     if (!S.clip) return;
-    const all = store.get("ms.pos", {}) || {};
-    all[S.clip.id] = Math.round(now() * 10) / 10;
-    store.set("ms.pos", all);
+    const all = store.get("ms.vodpos", {}) || {};
+    all[S.clip.id] = Math.round((S.dragClip != null ? clipToVod(S.dragClip) : vodNow()) * 10) / 10;
+    store.set("ms.vodpos", all);
   }
 
   async function openClip(c) {
     const token = ++S.openToken;
+    const tw = c.manifest.twitch;
     S.clip = c;
+    S.vodId = tw.vod_id;
+    S.sync = Array.isArray(tw.sync) && tw.sync.length ? tw.sync : [{ clip: 0, vod: tw.start || 0 }];
+    S.vodDuration = tw.vod_duration || 0;
     S.peaks = null;
     S.markers = [];
     S.markersError = null;
-    S.dragTime = null;
-    S.pendingSeek = (store.get("ms.pos", {}) || {})[c.id] || 0;
-    S.lastTime = S.pendingSeek;
+    S.dragClip = null;
     S.duration = c.duration || 0;
-    S.rate = ((c.manifest || {}).waveform || {}).rate || 50;
+    S.rate = (c.manifest.waveform || {}).rate || 50;
     overviewBars = null;
     nearId = null;
     show("#screen-clip");
     $("#clip-title").textContent = c.name;
     $("#t-dur").textContent = fmtTime(S.duration);
     setZoomButtons();
+    setQualityButton();
     renderSync();
     renderMarkers("Loading markers");
-    videoMsg("Loading");
+    videoMsg("Loading the Twitch VOD");
     resizeCanvases();
+    const saved = (store.get("ms.vodpos", {}) || {})[c.id];
+    createPlayer(typeof saved === "number" ? saved : clipToVod(0));
     requestDraw();
     ensureTags().catch(() => {});
     try {
-      const [link, wave] = await Promise.all([
-        dbx.tempLink(`${c.folder}/proxy.mp4`),
-        dbx.download(`${c.folder}/waveform.bin`).then((r) => r.arrayBuffer()),
-      ]);
+      const wave = await (await dbx.download(`${c.folder}/waveform.bin`)).arrayBuffer();
       if (token !== S.openToken) return;
       S.peaks = new Uint8Array(wave);
       S.ref = peakRef(S.peaks);
-      setVideo(link, S.pendingSeek, false);
+      overviewBars = null;
       requestDraw();
     } catch (e) {
       if (token !== S.openToken) return;
       if (e instanceof AuthError) return needSignIn();
-      videoMsg(`Couldn't load this clip. ${errText(e)}`);
+      toast(`Couldn't load the waveform. ${errText(e)}`);
     }
     try {
       await loadMarkers(c);
@@ -849,73 +1012,14 @@
   function closeClip() {
     savePos();
     S.openToken++;
+    destroyPlayer();
     S.clip = null;
-    video.pause();
-    video.removeAttribute("src");
-    video.load();
     showClips();
   }
 
   $("#clip-back").addEventListener("click", closeClip);
-
-  video.addEventListener("loadedmetadata", () => {
-    if (S.pendingSeek != null) {
-      video.currentTime = clamp(S.pendingSeek, 0, Math.max(0, clipEnd() - 0.05));
-      S.lastTime = video.currentTime;
-      S.pendingSeek = null;
-    }
-    video.playbackRate = S.speed;
-    videoMsg(null);
-    if (S.wantPlay) video.play().catch(() => {});
-    requestDraw();
-  });
-
-  video.addEventListener("error", () => {
-    if (!S.clip || !video.getAttribute("src")) return;
-    // Temporary links expire after 4 hours; anything older is probably that.
-    if (Date.now() - S.linkAt > 20000) refreshLink(S.wantPlay);
-    else videoMsg("The video couldn't load. Check your connection, then go back and reopen the clip.");
-  });
-
-  video.addEventListener("timeupdate", () => {
-    if (S.pendingSeek == null) S.lastTime = video.currentTime;
-    if (Date.now() - S.posSaved > 3000) {
-      S.posSaved = Date.now();
-      savePos();
-    }
-    requestDraw();
-  });
-  video.addEventListener("seeked", requestDraw);
-
-  const playBtn = $("#play");
-  video.addEventListener("play", () => {
-    S.wantPlay = true;
-    playBtn.textContent = "Pause";
-    playBtn.setAttribute("aria-label", "Pause");
-    requestDraw();
-  });
-  video.addEventListener("pause", () => {
-    S.wantPlay = false;
-    playBtn.textContent = "Play";
-    playBtn.setAttribute("aria-label", "Play");
-    requestDraw();
-  });
-
-  function togglePlay() {
-    if (!video.getAttribute("src")) return;
-    if (video.paused) video.play().catch(() => {});
-    else video.pause();
-  }
   playBtn.addEventListener("click", togglePlay);
-  video.addEventListener("click", togglePlay);
-
-  for (const b of $$("[data-skip]")) b.addEventListener("click", () => seek(now() + Number(b.dataset.skip)));
-
-  $("#speed").addEventListener("click", () => {
-    S.speed = SPEEDS[(SPEEDS.indexOf(S.speed) + 1) % SPEEDS.length];
-    video.playbackRate = S.speed;
-    $("#speed").textContent = `${S.speed}x`;
-  });
+  for (const b of $$("[data-skip]")) b.addEventListener("click", () => seekVod(vodNow() + Number(b.dataset.skip)));
 
   function setZoomButtons() {
     for (const b of $$("[data-zoom]")) b.setAttribute("aria-pressed", String(Number(b.dataset.zoom) === S.zoom));
@@ -981,6 +1085,7 @@
   function frame() {
     raf = 0;
     if (current !== "#screen-clip") return;
+    reconcile();
     const t = now();
     if (dirty || t !== lastDrawn) {
       dirty = false;
@@ -990,7 +1095,11 @@
       $("#t-now").textContent = fmtTime(t, true);
       updateNear(t);
     }
-    if (!video.paused || S.dragTime != null) raf = requestAnimationFrame(frame);
+    if (TP.playing && performance.now() - S.posSaved > 3000) {
+      S.posSaved = performance.now();
+      savePos();
+    }
+    if (TP.playing || TP.starting || S.dragClip != null) raf = requestAnimationFrame(frame);
   }
 
   function drawOverview(t) {
@@ -1027,7 +1136,7 @@
     c.fillRect(x0, 0, Math.max(3, x1 - x0), H);
     const unit = Math.max(1, Math.round(W / 390));
     c.fillStyle = "#e3b341";
-    for (const m of S.markers) c.fillRect(Math.round((m.timestamp / dur) * W - unit / 2), 0, unit, H);
+    for (const m of S.markers) c.fillRect(Math.round((mClip(m) / dur) * W - unit / 2), 0, unit, H);
     c.fillStyle = "#ffffff";
     c.fillRect(Math.round((t / dur) * W - unit), 0, unit * 2, H);
   }
@@ -1093,8 +1202,9 @@
 
     c.fillStyle = "#e3b341";
     for (const m of S.markers) {
-      if (m.timestamp < t0 || m.timestamp > t0 + span) continue;
-      const x = Math.round((m.timestamp - t0) * pps);
+      const mt = mClip(m);
+      if (mt < t0 || mt > t0 + span) continue;
+      const x = Math.round((mt - t0) * pps);
       c.fillRect(x - dpr, top, 2 * dpr, H - top);
       c.beginPath();
       c.moveTo(x - dpr, top);
@@ -1115,6 +1225,9 @@
     c.fill();
   }
 
+  // Both strips show where you're dragging live but only tell Twitch once you
+  // let go: every Twitch seek re-buffers, so seeking mid-drag would stutter.
+
   // Overview: tap or drag anywhere to jump.
   let ovDrag = false;
   function ovTime(e) {
@@ -1125,22 +1238,20 @@
     if (!S.duration) return;
     ov.setPointerCapture(e.pointerId);
     ovDrag = true;
-    S.dragTime = ovTime(e);
-    seekSoon(S.dragTime);
+    S.dragClip = ovTime(e);
     requestDraw();
   });
   ov.addEventListener("pointermove", (e) => {
     if (!ovDrag) return;
-    S.dragTime = ovTime(e);
-    seekSoon(S.dragTime);
+    S.dragClip = ovTime(e);
     requestDraw();
   });
   const ovEnd = () => {
     if (!ovDrag) return;
     ovDrag = false;
-    const t = S.dragTime;
-    S.dragTime = null;
-    seek(t);
+    const t = S.dragClip;
+    S.dragClip = null;
+    seekClip(t);
   };
   ov.addEventListener("pointerup", ovEnd);
   ov.addEventListener("pointercancel", ovEnd);
@@ -1157,22 +1268,21 @@
     const dx = e.clientX - dd.x;
     if (!dd.moved && Math.abs(dx) < 6) return;
     dd.moved = true;
-    S.dragTime = clamp(dd.t - (dx * S.zoom) / dt.clientWidth, 0, S.duration);
-    seekSoon(S.dragTime);
+    S.dragClip = clamp(dd.t - (dx * S.zoom) / dt.clientWidth, 0, S.duration);
     requestDraw();
   });
   function ddEnd(e, cancelled) {
     if (!dd || e.pointerId !== dd.id) return;
     let t;
     if (dd.moved) {
-      t = S.dragTime;
+      t = S.dragClip;
     } else if (!cancelled) {
       const r = dt.getBoundingClientRect();
       t = dd.t + ((e.clientX - r.left) / r.width - 0.5) * S.zoom;
     }
     dd = null;
-    S.dragTime = null;
-    if (t != null) seek(t);
+    S.dragClip = null;
+    if (t != null) seekClip(t);
     else requestDraw();
   }
   dt.addEventListener("pointerup", (e) => ddEnd(e, false));
@@ -1183,7 +1293,8 @@
   let nearId = null;
 
   const newId = () => `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  const sortMarkers = () => S.markers.sort((a, b) => a.timestamp - b.timestamp);
+  const sortMarkers = () => S.markers.sort((a, b) => mClip(a) - mClip(b));
+  const seekMarker = (m) => (typeof m.vod_time === "number" ? seekVod(m.vod_time) : seekClip(m.timestamp));
 
   async function loadMarkers(c) {
     S.markersError = null;
@@ -1247,13 +1358,14 @@
     for (const m of S.markers) {
       const li = el("li", m.id === nearId ? "mrow near" : "mrow");
       li.dataset.id = m.id;
-      const main = button("mrow-main", null, () => seek(m.timestamp));
-      main.append(el("span", "mrow-time", fmtTime(m.timestamp, true)));
+      const mt = mClip(m);
+      const main = button("mrow-main", null, () => seekMarker(m));
+      main.append(el("span", "mrow-time", fmtTime(mt, true)));
       main.append(el("span", m.note ? "mrow-note" : "mrow-note dim", m.note || "No note"));
       const suffix = m.tag ? tagSuffixFor(m.tag, m) : null;
       if (suffix) main.append(el("span", "suffix", suffix));
       const edit = button("mrow-edit", "Edit", () => openEditor(m, false));
-      edit.setAttribute("aria-label", `Edit marker at ${fmtTime(m.timestamp, true)}`);
+      edit.setAttribute("aria-label", `Edit marker at ${fmtTime(mt, true)}`);
       li.append(main, edit);
       ul.append(li);
     }
@@ -1263,7 +1375,7 @@
     let best = null;
     let bestD = 1.5;
     for (const m of S.markers) {
-      const d = Math.abs(m.timestamp - t);
+      const d = Math.abs(mClip(m) - t);
       if (d <= bestD) {
         bestD = d;
         best = m.id;
@@ -1276,12 +1388,13 @@
 
   $("#add").addEventListener("click", () => {
     if (!S.clip) return;
-    const t = Math.round(now() * 1000) / 1000;
-    const resume = !video.paused;
-    video.pause();
+    const v = Math.round((S.dragClip != null ? clipToVod(S.dragClip) : vodNow()) * 1000) / 1000;
+    const resume = TP.playing || TP.starting;
+    pauseVideo();
     const stamp = new Date().toISOString();
     const m = {
-      version: 1, id: newId(), clip_id: S.clip.id, timestamp: t,
+      version: 2, id: newId(), clip_id: S.clip.id, vod_id: S.vodId, vod_time: v,
+      timestamp: Math.round(vodToClip(v) * 1000) / 1000,
       note: "", tag: null, tag_suffix: null, created: stamp, updated: stamp,
     };
     S.markers.push(m);
@@ -1298,7 +1411,7 @@
 
   function openEditor(m, resume) {
     ed = { m, resume, tag: m.tag || null };
-    $("#ed-time").textContent = `Marker at ${fmtTime(m.timestamp, true)}`;
+    $("#ed-time").textContent = `Marker at ${fmtTime(mClip(m), true)}`;
     $("#ed-note").value = m.note || "";
     $("#ed-newtag").hidden = true;
     $("#ed-newtag-error").hidden = true;
@@ -1327,7 +1440,7 @@
     $("#sheet-editor").hidden = true;
     renderMarkers();
     requestDraw();
-    if (resume) video.play().catch(() => {});
+    if (resume) playVideo();
   }
 
   function renderEditorTags() {
@@ -1420,17 +1533,21 @@
   window.addEventListener("pagehide", savePos);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
+      // Leaving the app stops the video; pausing here keeps the clock honest.
+      if (TP.playing || TP.starting) pauseVideo();
       savePos();
       return;
     }
     outbox.flush();
     if (current === "#screen-clips") refreshClips();
-    if (current === "#screen-clip" && S.clip && Date.now() - S.linkAt > 3.5 * 3600e3) refreshLink(false);
   });
 
   function init() {
+    if (CFG.debug) window.__ms = { TP, S, vodNow };   // automated tests only
     const z = store.get("ms.zoom", 30);
     S.zoom = ZOOMS.includes(z) ? z : 30;
+    const q = store.get("ms.quality", 480);
+    S.quality = QUALITIES.includes(q) ? q : 480;
     renderSync();
     if (!APP_KEY) return show("#screen-setup");
     if (!auth.signedIn()) return showConnect();

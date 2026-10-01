@@ -193,7 +193,16 @@ code, .mono { font-family: var(--mono); }
 .clip-top { flex: none; }
 
 .video-wrap { position: relative; background: #000; }
-#video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; }
+.player { width: 100%; aspect-ratio: 16 / 9; background: #000; }
+.player iframe { display: block; width: 100%; height: 100%; border: 0; }
+.player-hint {
+  padding: 8px 14px;
+  background: var(--accent-lo);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+}
 .video-msg {
   position: absolute;
   inset: 0;
@@ -205,13 +214,14 @@ code, .mono { font-family: var(--mono); }
   color: var(--t2);
   font-size: 15px;
   background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
 }
 
 .transport { padding: 6px 12px 4px; }
 .times { display: flex; justify-content: space-between; align-items: baseline; padding: 0 2px 4px; }
 .t-now { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
-.transport-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
-.btn-key { min-height: 42px; padding: 0; font-size: 15px; font-variant-numeric: tabular-nums; }
+.transport-row { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 8px; }
+.btn-key { min-height: 48px; padding: 0; font-size: 17px; font-variant-numeric: tabular-nums; }
 .btn-play { background: var(--t1); color: var(--bg); border-color: var(--t1); }
 .btn-play:active { background: #c9d1d9; }
 .btn-speed { min-height: 40px; min-width: 52px; padding: 0 10px; color: var(--accent); font-variant-numeric: tabular-nums; }
@@ -352,12 +362,6 @@ code, .mono { font-family: var(--mono); }
 .tag-list li { display: flex; align-items: center; gap: 12px; min-height: 52px; border-bottom: 1px solid var(--border); }
 .tag-list .tag-name { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
 .tag-list .empty { color: var(--t2); font-size: 15px; }
-
-/* --- Twitch player ----------------------------------------------------- */
-
-.tt-player { width: 100%; aspect-ratio: 16 / 9; background: #000; }
-.tt-player iframe { display: block; width: 100%; height: 100%; border: 0; }
-.tt-log .empty { font-family: var(--mono); font-size: 13px; padding: 6px 16px; }
 
 /* --- Toast ------------------------------------------------------------- */
 

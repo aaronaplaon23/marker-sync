@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src https://*.dropboxusercontent.com; connect-src https://api.dropboxapi.com https://content.dropboxapi.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://player.twitch.tv; frame-src https://player.twitch.tv https://embed.twitch.tv; style-src 'self'; img-src 'self' data:; connect-src https://api.dropboxapi.com https://content.dropboxapi.com; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="theme-color" content="#0d1117">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=202610011457">
+<link rel="stylesheet" href="style.css?v=202610011604">
 <title>Marker Sync</title>
 </head>
 <body>
@@ -60,7 +60,7 @@
   <ul id="clips-list" class="clip-list"></ul>
   <div id="clips-empty" class="empty-state" hidden>
     <p class="empty-title">No clips yet</p>
-    <p class="muted">Drop a trimmed clip into <span id="watch-folder-label" class="mono"></span> on the PC. It shows up here when its phone copy is ready.</p>
+    <p class="muted">On the PC, open the clip editor's <b>Phone</b> tab and add a clip. It shows up here a minute or two later.</p>
   </div>
   <footer class="clips-foot">
     <span id="clips-sync" class="sync" hidden></span>
@@ -77,9 +77,10 @@
   </header>
   <div class="clip-top">
     <div class="video-wrap">
-      <video id="video" playsinline webkit-playsinline preload="auto" disablepictureinpicture></video>
+      <div id="player" class="player"></div>
       <div id="video-msg" class="video-msg" hidden></div>
     </div>
+    <div id="player-hint" class="player-hint" hidden>Tap the video once to start it. After that the buttons work.</div>
     <div class="transport">
       <div class="times">
         <span id="t-now" class="mono t-now">0:00.0</span>
@@ -87,9 +88,7 @@
       </div>
       <div class="transport-row">
         <button class="btn btn-key" type="button" data-skip="-10">-10</button>
-        <button class="btn btn-key" type="button" data-skip="-3">-3</button>
         <button id="play" class="btn btn-key btn-play" type="button" aria-label="Play">Play</button>
-        <button class="btn btn-key" type="button" data-skip="3">+3</button>
         <button class="btn btn-key" type="button" data-skip="10">+10</button>
       </div>
     </div>
@@ -102,7 +101,7 @@
         <button type="button" data-zoom="120">2m</button>
         <button type="button" data-zoom="600">10m</button>
       </div>
-      <button id="speed" class="btn btn-speed" type="button" aria-label="Playback speed">1x</button>
+      <button id="quality" class="btn btn-speed" type="button" aria-label="Video quality">480p</button>
       <button id="add" class="btn btn-add" type="button" aria-label="Add marker here">+ Marker</button>
     </div>
   </div>
@@ -163,7 +162,8 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js?v=202610011457"></script>
-<script src="app.js?v=202610011457"></script>
+<script src="config.js?v=202610011604"></script>
+<script src="https://player.twitch.tv/js/embed/v1.js"></script>
+<script src="app.js?v=202610011604"></script>
 </body>
 </html>
