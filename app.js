@@ -471,6 +471,7 @@
 
   let tags = [];
   let tagsLoaded = false;
+  let tagsRev = null;                 // Dropbox revision of tags.json last read
   let editingTag = null;              // id of the tag open for editing in the Tags sheet
 
   const cleanName = (s) => String(s || "").trim().replace(/\s+/g, " ");
@@ -510,6 +511,7 @@
       const meta = await dbx.meta("/tags.json");
       if (meta) {
         [tags, added] = normalizeTags((parseJson(await readText(meta)) || {}).tags);
+        tagsRev = meta.rev;
       } else {
         // First run: writing it also makes Dropbox create the app folder on the PC.
         tags = [];
@@ -755,14 +757,16 @@
     });
     for (const c of list) describeClip(c);
     return list
-      .filter((c) => c.state !== "empty")
+      .filter((c) => c.state !== "empty" && c.state !== "pc")
       .sort((a, b) => String(b.created || "").localeCompare(String(a.created || "")));
   }
 
   function describeClip(c) {
     const m = c.manifest;
     const s = c.status;
-    if (m) {
+    if (m && m.pc_only) {
+      c.state = "pc";             // marked in the clip editor, not sent to the phone
+    } else if (m) {
       const wf = c.files["waveform.bin"];
       const twitch = m.twitch && Array.isArray(m.twitch.sync) && m.twitch.sync.length;
       const complete = wf && wf.size === (m.waveform || {}).size;
@@ -898,8 +902,11 @@
   }
 
   // Markers remember the VOD moment they were placed at, so a re-alignment on
-  // the PC moves them all with it.
-  const mClip = (m) => (typeof m.vod_time === "number" ? vodToClip(m.vod_time) : m.timestamp);
+  // the PC moves them all with it. Markers placed in the clip editor on the PC
+  // are pinned to the recording itself ("clock": "clip"), which also covers
+  // stretches the VOD doesn't have.
+  const onClipClock = (m) => m.clock === "clip" || typeof m.vod_time !== "number";
+  const mClip = (m) => (onClipClock(m) ? m.timestamp : vodToClip(m.vod_time));
 
   /* ---------- the video ---------- */
   // Two players sit behind the same few functions (vodNow, playVideo,
@@ -1627,9 +1634,61 @@
     if (token !== S.openToken) return;
     renderMarkers();
     requestDraw();
+    clearInterval(syncTimer);
+    syncTimer = setInterval(syncOpenClip, CFG.syncMs || 10000);
+  }
+
+  /* The clip editor's Markers tab writes to the same folder. While a clip is
+     open, look for changes every 10 s and on coming back to the app: one
+     folder listing, and only files whose revision changed are downloaded.
+     Skipped while a marker is open or being moved, so nothing shifts under a
+     finger; the next round picks it up. */
+  let syncTimer = 0;
+  let syncBusy = false;
+
+  async function refreshTags() {
+    if (editingTag || outbox.pendingFor("/tags.json").length) return false;
+    const meta = await dbx.meta("/tags.json");
+    if (!meta || meta.rev === tagsRev) return false;
+    const [list] = normalizeTags((parseJson(await readText(meta)) || {}).tags);
+    tagsRev = meta.rev;
+    tagsLoaded = true;
+    if (JSON.stringify(list) === JSON.stringify(tags)) return false;
+    tags = list;
+    return true;
+  }
+
+  async function syncOpenClip() {
+    const c = S.clip;
+    if (!c || syncBusy || document.hidden || ed || S.moving || !navigator.onLine) return;
+    syncBusy = true;
+    const token = S.openToken;
+    const keep = S.markers;
+    const key = (list) => list.map((m) => `${m.id}:${m.updated || ""}`).sort().join("|");
+    try {
+      const tagsChanged = await refreshTags();
+      await loadMarkers(c);
+      if (token !== S.openToken) return;
+      if (ed || S.moving) {
+        S.markers = keep;          // busy now; try again next round
+        return;
+      }
+      if (tagsChanged || key(keep) !== key(S.markers)) {
+        renderMarkers();
+        requestDraw();
+      } else {
+        S.markers = keep;          // same markers: keep the objects the screen points at
+      }
+    } catch (e) {
+      if (token === S.openToken) S.markers = keep;
+      if (e instanceof AuthError) needSignIn();
+    } finally {
+      syncBusy = false;
+    }
   }
 
   function closeClip() {
+    clearInterval(syncTimer);
     savePos();
     S.openToken++;
     destroyPlayer();
@@ -2100,8 +2159,10 @@
     requestDraw();
   }
 
+  // Moved on the phone: back on the VOD clock, whoever placed it.
   function placeMarker(m, c) {
     const v = Math.round(clipToVod(c) * 1000) / 1000;
+    delete m.clock;
     m.vod_time = v;
     m.vod_id = m.vod_id || S.vodId;
     m.timestamp = Math.round(vodToClip(v) * 1000) / 1000;
@@ -2114,7 +2175,8 @@
     if (!mv) return;
     if (!cancel && Math.abs(mv.at - mv.from) >= 0.05) {
       const m = mv.m;
-      const before = { had: typeof m.vod_time === "number", vod_time: m.vod_time, vod_id: m.vod_id, timestamp: m.timestamp };
+      const before = { had: typeof m.vod_time === "number", vod_time: m.vod_time, vod_id: m.vod_id,
+        timestamp: m.timestamp, clock: m.clock };
       placeMarker(m, mv.at);
       sortMarkers();
       renderMarkers();
@@ -2123,6 +2185,7 @@
         run: () => {
           if (before.had) Object.assign(m, { vod_time: before.vod_time, vod_id: before.vod_id });
           else delete m.vod_time;
+          if (before.clock) m.clock = before.clock;
           m.timestamp = before.timestamp;
           persistMarker(m);
           if (S.clip && S.clip.id === m.clip_id) {
@@ -2289,7 +2352,7 @@
 
   const newId = () => `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const sortMarkers = () => S.markers.sort((a, b) => mClip(a) - mClip(b));
-  const seekMarker = (m) => (typeof m.vod_time === "number" ? seekVod(m.vod_time) : seekClip(m.timestamp));
+  const seekMarker = (m) => (onClipClock(m) ? seekClip(m.timestamp) : seekVod(m.vod_time));
 
   async function loadMarkers(c) {
     S.markersError = null;
@@ -2613,10 +2676,11 @@
     }
     outbox.flush();
     if (current === "#screen-clips") refreshClips();
+    if (current === "#screen-clip") syncOpenClip();
   });
 
   function init() {
-    if (CFG.debug) window.__ms = { TP, DV, S, vodNow, mode: () => mode, rate: () => rate, tags: () => tags };   // automated tests only
+    if (CFG.debug) window.__ms = { TP, DV, S, vodNow, mode: () => mode, rate: () => rate, tags: () => tags, syncOpenClip };   // automated tests only
     const z = store.get("ms.zoom", 30);
     S.zoom = typeof z === "number" && z >= ZOOM_MIN && z <= ZOOM_MAX ? z : 30;
     const q = store.get("ms.quality", 480);
