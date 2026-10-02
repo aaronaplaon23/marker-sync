@@ -479,6 +479,37 @@
   const newTagId = () => `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const tagById = (id) => tags.find((t) => t.id === id) || null;
 
+  // Marker and tag colors, by name (the PC's marker_sync.COLORS); none is the
+  // usual amber. A marker's color is its flag, its tick and its row in the
+  // list; a tag's is only that tag's chips.
+  const COLORS = [
+    { id: "", label: "Default", hex: "#e3b341" },
+    { id: "red", label: "Red", hex: "#f87171" },
+    { id: "orange", label: "Orange", hex: "#fb923c" },
+    { id: "green", label: "Green", hex: "#4ade80" },
+    { id: "cyan", label: "Cyan", hex: "#22d3ee" },
+    { id: "blue", label: "Blue", hex: "#60a5fa" },
+    { id: "purple", label: "Purple", hex: "#a78bfa" },
+    { id: "pink", label: "Pink", hex: "#f472b6" },
+  ];
+  const cleanColor = (c) => (c && COLORS.some((x) => x.id === c) ? c : "");
+  const colorHex = (id) => (COLORS.find((c) => c.id === (id || "")) || COLORS[0]).hex;
+  const tintTag = (node, t) => {
+    if (t && cleanColor(t.color)) node.style.setProperty("--tc", colorHex(t.color));
+  };
+
+  // A row of color dots, Default first.
+  function swatches(current, onPick) {
+    return COLORS.map((c) => {
+      const b = button("swatch", null, () => onPick(c.id));
+      b.style.setProperty("--c", c.hex);
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-label", c.label);
+      b.setAttribute("aria-checked", String((current || "") === c.id));
+      return b;
+    });
+  }
+
   // Returns [tags, whether any were missing an id].
   function normalizeTags(list) {
     const out = [];
@@ -497,7 +528,9 @@
       if (ids.has(id)) id = newTagId();
       names.add(name.toLowerCase());
       ids.add(id);
-      out.push({ id, name, suffix });
+      const tag = { id, name, suffix };
+      if (cleanColor(t.color)) tag.color = t.color;
+      out.push(tag);
     }
     return [out, added];
   }
@@ -595,7 +628,9 @@
       }
       const li = el("li", "tag-row");
       li.dataset.id = t.id;
-      li.append(el("span", "tag-name", t.name), el("span", "suffix", t.suffix));
+      const sx = el("span", "suffix", t.suffix);
+      tintTag(sx, t);
+      li.append(el("span", "tag-name", t.name), sx);
       li.append(button("btn btn-ghost btn-danger btn-small", "Delete", () => {
         tags = tags.filter((x) => x !== t);
         saveTags();
@@ -627,6 +662,15 @@
     suffix.enterKeyHint = "done";
     const err = el("p", "error-text");
     err.hidden = true;
+    let color = cleanColor(t.color);
+    const colors = el("div", "swatches");
+    colors.setAttribute("role", "radiogroup");
+    colors.setAttribute("aria-label", "Tag color");
+    const paint = () => colors.replaceChildren(...swatches(color, (id) => {
+      color = id;
+      paint();
+    }));
+    paint();
     const save = () => {
       const r = validateTag(name.value, suffix.value, t);
       if (typeof r === "string") {
@@ -634,8 +678,10 @@
         err.hidden = false;
         return;
       }
-      const changed = r.name !== t.name || r.suffix !== t.suffix;
+      const changed = r.name !== t.name || r.suffix !== t.suffix || color !== cleanColor(t.color);
       Object.assign(t, r);
+      if (color) t.color = color;
+      else delete t.color;
       editingTag = null;
       if (changed) {
         saveTags();
@@ -661,7 +707,7 @@
         editingTag = null;
         renderTagList();
       }));
-    li.append(name, row, err, foot);
+    li.append(name, row, el("span", "muted small", "Color, only on this tag's chips"), colors, err, foot);
     return li;
   }
 
@@ -874,6 +920,7 @@
     tracks: [],
     view: [],                // track numbers shown as waveform lanes
     waveCache: new Map(),    // file -> {peaks, ref, rate}
+    waveLoads: new Map(),    // file -> its download in flight
     dragClip: null,
     moving: null,            // a marker being moved: {m, from, at, resume}
     posSaved: 0,
@@ -1061,6 +1108,10 @@
     v.addEventListener("error", () => directFailed());
     v.addEventListener("click", togglePlay);
     DV.el = v;
+    VZ.s = 1;
+    VZ.x = 0;
+    VZ.y = 0;
+    vzApply();
     $("#player").append(v);
     videoMsg("Tap Play to start the VOD");
     directSource(at);
@@ -1480,12 +1531,28 @@
 
   const LANE_HEIGHTS = [112, 148, 176];      // the zoomed strip grows a little for more lanes
 
+  // One download per waveform file per clip, shared by the lanes and the talk finder.
+  function waveFor(t) {
+    const clip = S.clip;
+    if (S.waveCache.has(t.file)) return Promise.resolve(S.waveCache.get(t.file));
+    const loads = S.waveLoads;
+    let job = loads.get(t.file);
+    if (!job) {
+      job = (async () => {
+        const peaks = new Uint8Array(await (await dbx.download(`${clip.folder}/${t.file}`)).arrayBuffer());
+        const w = { peaks, ref: peakRef(peaks), rate: t.rate || 50 };
+        if (S.clip === clip) S.waveCache.set(t.file, w);
+        return w;
+      })();
+      loads.set(t.file, job);
+      job.catch(() => {}).then(() => { if (loads.get(t.file) === job) loads.delete(t.file); });
+    }
+    return job;
+  }
+
   async function showTracks(nums) {
     S.view = S.tracks.map((t) => t.track).filter((n) => nums.includes(n));
     if (!S.view.length) S.view = [S.tracks[0].track];
-    const first = trackByNum(S.view[0]);
-    $("#track").textContent = (first.short || first.label) + (S.view.length > 1 ? ` +${S.view.length - 1}` : "");
-    $("#track").style.color = rgba(rgbOf(first), 1);
     const h = `${LANE_HEIGHTS[Math.min(S.view.length, LANE_HEIGHTS.length) - 1]}px`;
     if (dt.style.height !== h) {
       dt.style.height = h;
@@ -1497,9 +1564,8 @@
     await Promise.all(S.view.map(async (n) => {
       const t = trackByNum(n);
       if (!t || S.waveCache.has(t.file)) return;
-      let peaks;
       try {
-        peaks = new Uint8Array(await (await dbx.download(`${clip.folder}/${t.file}`)).arrayBuffer());
+        await waveFor(t);
       } catch (e) {
         if (S.clip !== clip) return;
         if (e instanceof AuthError) return needSignIn();
@@ -1507,13 +1573,12 @@
         return;
       }
       if (S.clip !== clip) return;
-      S.waveCache.set(t.file, { peaks, ref: peakRef(peaks), rate: t.rate || 50 });
       overviewBars = null;
       requestDraw();
     }));
   }
 
-  /* ---------- waveform and video sheet ---------- */
+  /* ---------- settings sheet: waveforms, talking parts, video ---------- */
 
   let checkTimer = 0;
 
@@ -1545,6 +1610,7 @@
       ? "Direct plays the VOD in the phone's own player: exact time, nothing over the picture. Twitch is the backup."
       : blocker || "Twitch's own player, the backup. Direct is more exact.";
     for (const q of $$("[data-quality]")) q.setAttribute("aria-pressed", String(Number(q.dataset.quality) === S.quality));
+    renderTalkCount();
     renderPlayerCheck();
   }
 
@@ -1560,7 +1626,7 @@
     clearInterval(checkTimer);
   }
 
-  $("#track").addEventListener("click", openViewSheet);
+  $("#settings").addEventListener("click", openViewSheet);
   $("#view-done").addEventListener("click", closeViewSheet);
   for (const q of $$("[data-quality]")) {
     q.addEventListener("click", () => {
@@ -1603,6 +1669,9 @@
       .filter((s) => s && typeof s.url === "string" && /^https:\/\//.test(s.url) && s.height > 0);
     DV.failed = null;
     S.waveCache = new Map();
+    S.waveLoads = new Map();
+    Object.assign(talk, { peaks: null, regions: [], atIndex: null, anchorAt: null, threshold: null });
+    vzReset();
     S.tracks = trackList(c.manifest);
     S.view = [];
     S.markers = [];
@@ -1623,6 +1692,7 @@
     startPlayer(typeof saved === "number" ? saved : clipToVod(0));
     requestDraw();
     ensureTags().catch(() => {});
+    loadTalk();
     await showTracks(sessionView || [S.tracks[0].track]);
     if (token !== S.openToken) return;
     try {
@@ -1699,6 +1769,272 @@
   $("#clip-back").addEventListener("click", closeClip);
   playBtn.addEventListener("click", togglePlay);
   for (const b of $$("[data-skip]")) b.addEventListener("click", () => seekVod(vodNow() + Number(b.dataset.skip)));
+
+  /* ---------- talking parts ----------
+     The clip editor's talk finder: wherever the mic waveform is louder than a
+     threshold is talking, short blips are dropped and a breath doesn't split a
+     sentence. The arrows beside -10 and +10 jump to the previous and next
+     part, a moment early so the first word isn't cut off. The threshold is a
+     fraction of this clip's loudest moment, suggested from the clip's own
+     levels until the slider in the settings sheet sets it (then it stays). */
+
+  const TALK = { MIN_S: 0.4, MERGE_S: 0.7, PREROLL_S: 0.3, FLOOR_PCT: 0.2, FLOOR_MULT: 2.5, TALK_FRAC: 0.06,
+    LO: 0.005, HI: 0.6 };
+  const talk = { peaks: null, rate: 50, max: 1, threshold: null, regions: [], atIndex: null, anchorAt: null };
+
+  const micTrack = () => S.tracks.find((t) => t.label === "Mic") || null;
+
+  // The slider runs 0 to 100, right is more sensitive (a lower threshold), on a
+  // log scale so the useful middle isn't squeezed into one end.
+  const sensToThr = (v) => Math.exp(Math.log(TALK.HI) + (Math.log(TALK.LO) - Math.log(TALK.HI)) * (v / 100));
+  const thrToSens = (t) =>
+    Math.round(clamp((Math.log(t) - Math.log(TALK.HI)) / (Math.log(TALK.LO) - Math.log(TALK.HI)), 0, 1) * 100);
+
+  // The PC's suggestThreshold: clear of the room noise, or a fraction of
+  // talking level, whichever is higher. The mic is gated, so the silence
+  // between words is left out when measuring the noise.
+  function suggestThreshold(p, max) {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < p.length; i++) hist[p[i]]++;
+    const nth = (k) => {
+      let acc = 0;
+      for (let v = 0; v < 256; v++) {
+        acc += hist[v];
+        if (acc > k) return v;
+      }
+      return 255;
+    };
+    const loud = nth(Math.floor(p.length * 0.995)) / max || 1;
+    const sounding = p.length - hist[0];
+    const floor = sounding > 0 ? nth(hist[0] + Math.floor(sounding * TALK.FLOOR_PCT)) / max : 0;
+    return clamp(Math.max(floor * TALK.FLOOR_MULT, loud * TALK.TALK_FRAC), TALK.LO, Math.max(0.01, loud * 0.6));
+  }
+
+  function findTalk() {
+    talk.regions = [];
+    talk.atIndex = null;
+    talk.anchorAt = null;
+    const p = talk.peaks;
+    if (p) {
+      const raw = talk.threshold * talk.max;
+      const gap = TALK.MERGE_S * talk.rate;
+      const min = TALK.MIN_S * talk.rate;
+      const keep = (r) => {
+        if (r && r[1] - r[0] >= min) talk.regions.push({ start: r[0] / talk.rate, end: r[1] / talk.rate });
+      };
+      let cur = null;
+      let start = -1;
+      for (let i = 0; i <= p.length; i++) {
+        if (i < p.length && p[i] >= raw) {
+          if (start < 0) start = i;
+        } else if (start >= 0) {
+          if (cur && start - cur[1] <= gap) cur[1] = i;        // a breath: same sentence
+          else {
+            keep(cur);
+            cur = [start, i];
+          }
+          start = -1;
+        }
+      }
+      keep(cur);
+    }
+    renderTalkCount();
+    requestDraw();
+  }
+
+  async function loadTalk() {
+    const clip = S.clip;
+    const t = micTrack();
+    if (!t) return renderTalkCount();
+    let w;
+    try {
+      w = await waveFor(t);
+    } catch {
+      return;                     // the lanes say so; the arrows explain when pressed
+    }
+    if (S.clip !== clip) return;
+    let max = 1;
+    for (let i = 0; i < w.peaks.length; i++) if (w.peaks[i] > max) max = w.peaks[i];
+    Object.assign(talk, { peaks: w.peaks, rate: w.rate, max });
+    const saved = store.get("ms.talk", null);
+    talk.threshold = typeof saved === "number" && saved >= TALK.LO && saved <= TALK.HI ? saved : suggestThreshold(w.peaks, max);
+    findTalk();
+  }
+
+  function renderTalkCount() {
+    const out = $("#talk-count");
+    const input = $("#talk-sens");
+    input.disabled = !talk.peaks;
+    if (talk.threshold != null) input.value = String(thrToSens(talk.threshold));
+    if (!talk.peaks) {
+      out.textContent = micTrack() ? "loading the mic waveform" : "this clip has no mic waveform";
+      return;
+    }
+    const total = talk.regions.reduce((a, r) => a + r.end - r.start, 0);
+    out.textContent = talk.regions.length ? `${talk.regions.length} parts, ${fmtTime(total)} of talk` : "none at this sensitivity";
+  }
+
+  // Remembers where it sent the playhead, so pressing again goes on to the
+  // next part rather than finding the same one (the jump lands a moment
+  // before it). Anywhere else, it's the next one from the playhead.
+  function jumpTalk(dir) {
+    if (!S.clip) return;
+    if (!talk.peaks) {
+      toast(micTrack() ? "The mic waveform is still loading." : "This clip has no mic waveform to find talking in.");
+      return;
+    }
+    const R = talk.regions;
+    if (!R.length) {
+      toast("No talking parts at this sensitivity. Turn it up with the gear button.");
+      return;
+    }
+    const t = now();
+    let i;
+    if (Number.isInteger(talk.atIndex) && R[talk.atIndex] && talk.anchorAt != null && Math.abs(t - talk.anchorAt) < 0.5) {
+      i = talk.atIndex + dir;
+    } else {
+      const x = t + TALK.PREROLL_S;
+      if (dir > 0) i = R.findIndex((r) => r.start > x + 0.05);
+      else {
+        i = -1;
+        for (let k = 0; k < R.length && R[k].start < x - 0.05; k++) i = k;
+      }
+    }
+    if (i < 0 || i >= R.length) {
+      toast(dir > 0 ? "No more talking after this." : "No talking before this.");
+      return;
+    }
+    talk.atIndex = i;
+    talk.anchorAt = Math.max(0, R[i].start - TALK.PREROLL_S);
+    seekClip(talk.anchorAt);
+  }
+
+  for (const b of $$("[data-talk]")) b.addEventListener("click", () => jumpTalk(Number(b.dataset.talk)));
+  $("#talk-sens").addEventListener("input", (e) => {
+    if (!talk.peaks) return;
+    talk.threshold = sensToThr(Number(e.target.value));
+    findTalk();
+  });
+  $("#talk-sens").addEventListener("change", () => {
+    if (talk.peaks && talk.threshold != null) store.set("ms.talk", talk.threshold);
+  });
+
+  /* ---------- video zoom ----------
+     Pinch the video to zoom into it, even while it plays, and drag with one
+     finger to look around while zoomed. Only the picture moves; the page, the
+     waveforms and the buttons stay put. A tap still plays and pauses. The pill
+     in the corner (or pinching back out) puts it back. Direct player only:
+     Twitch's player is another site's frame and keeps its own touches. */
+  const VZ = { s: 1, x: 0, y: 0, pts: new Map(), g: null, swallow: false };
+  const vwrap = $(".video-wrap");
+  const VZ_MAX = 6;
+
+  function vzApply() {
+    if (DV.el) DV.el.style.transform = VZ.s > 1 ? `translate(${VZ.x}px, ${VZ.y}px) scale(${VZ.s})` : "";
+    const pill = $("#video-zoom");
+    pill.hidden = VZ.s <= 1;
+    pill.textContent = `${VZ.s.toFixed(1)}x · Reset`;
+  }
+
+  // Keeps the picture covering the whole box: no black gaps at the edges.
+  function vzClamp() {
+    const W = $("#player").clientWidth;
+    const H = $("#player").clientHeight;
+    VZ.s = clamp(VZ.s, 1, VZ_MAX);
+    VZ.x = clamp(VZ.x, W - W * VZ.s, 0);
+    VZ.y = clamp(VZ.y, H - H * VZ.s, 0);
+  }
+
+  function vzReset() {
+    Object.assign(VZ, { s: 1, x: 0, y: 0, g: null });
+    VZ.pts.clear();
+    vzApply();
+  }
+
+  function vzPoint(e) {
+    const r = $("#player").getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  // A gesture starts over whenever a finger comes or goes.
+  function vzBegin() {
+    const p = [...VZ.pts.values()];
+    if (p.length >= 2) {
+      const [a, b] = p;
+      VZ.g = { pinch: true, d0: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), s0: VZ.s,
+        cx: ((a.x + b.x) / 2 - VZ.x) / VZ.s, cy: ((a.y + b.y) / 2 - VZ.y) / VZ.s };
+      VZ.swallow = true;
+    } else if (p.length === 1) {
+      VZ.g = { pinch: false, p0: p[0], x0: VZ.x, y0: VZ.y, moved: VZ.swallow };
+    } else {
+      VZ.g = null;
+    }
+  }
+
+  vwrap.addEventListener("pointerdown", (e) => {
+    if (!VZ.pts.size) VZ.swallow = false;          // a new touch: only its own moves count
+    if (mode !== "direct" || e.target.closest("#video-zoom")) return;
+    VZ.pts.set(e.pointerId, vzPoint(e));
+    try { vwrap.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    vzBegin();
+  });
+  vwrap.addEventListener("pointermove", (e) => {
+    if (!VZ.pts.has(e.pointerId) || !VZ.g) return;
+    VZ.pts.set(e.pointerId, vzPoint(e));
+    const g = VZ.g;
+    const p = [...VZ.pts.values()];
+    if (g.pinch && p.length >= 2) {
+      // The spot of the picture that was between the fingers stays there.
+      const [a, b] = p;
+      VZ.s = clamp(g.s0 * (Math.hypot(a.x - b.x, a.y - b.y) / g.d0), 1, VZ_MAX);
+      VZ.x = (a.x + b.x) / 2 - g.cx * VZ.s;
+      VZ.y = (a.y + b.y) / 2 - g.cy * VZ.s;
+    } else if (!g.pinch) {
+      const dx = p[0].x - g.p0.x;
+      const dy = p[0].y - g.p0.y;
+      if (!g.moved && Math.hypot(dx, dy) < 8) return;
+      g.moved = true;
+      if (VZ.s <= 1) return;
+      VZ.swallow = true;
+      VZ.x = g.x0 + dx;
+      VZ.y = g.y0 + dy;
+    }
+    vzClamp();
+    vzApply();
+  });
+  const vzEnd = (e) => {
+    if (!VZ.pts.delete(e.pointerId)) return;
+    if (!VZ.pts.size && VZ.s < 1.05) {
+      VZ.s = 1;
+      VZ.x = 0;
+      VZ.y = 0;
+      vzApply();
+    }
+    vzBegin();
+  };
+  vwrap.addEventListener("pointerup", vzEnd);
+  vwrap.addEventListener("pointercancel", vzEnd);
+  // A pinch or a drag isn't a tap: the video's play/pause doesn't hear it.
+  vwrap.addEventListener("click", (e) => {
+    if (!VZ.swallow || e.target.closest("#video-zoom")) return;
+    VZ.swallow = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+  $("#video-zoom").addEventListener("click", (e) => {
+    e.stopPropagation();
+    vzReset();
+  });
+  window.addEventListener("resize", () => {
+    vzClamp();
+    vzApply();
+  });
+
+  // No page zoom: a stray pinch used to zoom the whole page. The video (above)
+  // and the waveform strip have their own.
+  for (const name of ["gesturestart", "gesturechange", "gestureend"]) {
+    document.addEventListener(name, (e) => e.preventDefault(), { passive: false });
+  }
 
   /* ---------- zoom ---------- */
   // The zoomed strip shows S.zoom seconds across. − / + step through these;
@@ -1827,7 +2163,7 @@
       return;
     }
     if (mode !== "direct") {
-      toast("Speed works with the Direct player (Mic ▾, Video player).");
+      toast("Speed works with the Direct player (the gear button, Video player).");
       return;
     }
     setRate(rate === 1 ? altRate : 1);
@@ -1944,9 +2280,11 @@
     const unit = Math.max(1, Math.round(W / 390));
     for (const m of S.markers) {
       if (S.moving && S.moving.m === m) continue;
-      c.fillStyle = passesFilter(m) ? "#e3b341" : "rgba(227, 179, 65, 0.25)";
+      c.globalAlpha = passesFilter(m) ? 1 : 0.25;
+      c.fillStyle = colorHex(m.color);
       c.fillRect(Math.round((mClip(m) / dur) * W - unit / 2), 0, unit, H);
     }
+    c.globalAlpha = 1;
     c.fillStyle = "#ffffff";
     c.fillRect(Math.round((t / dur) * W - unit), 0, unit * 2, H);
     if (S.moving) {
@@ -1975,6 +2313,16 @@
       if (t0 < 0) c.fillRect(0, top, -t0 * pps, H - top);
       const endX = (dur - t0) * pps;
       if (endX < W) c.fillRect(endX, top, W - endX, H - top);
+    }
+
+    // Talking parts, faintly: what the arrows by -10 and +10 jump between.
+    c.fillStyle = "rgba(230, 237, 243, 0.07)";
+    for (const r of talk.regions) {
+      if (r.end < t0) continue;
+      if (r.start > t0 + span) break;
+      const a = Math.max(0, (r.start - t0) * pps);
+      const b = Math.min(W, (r.end - t0) * pps);
+      c.fillRect(a, top, Math.max(1, b - a), H - top);
     }
 
     const step = TICK_STEPS.find((s) => s * pps >= 64 * dpr) || 3600;
@@ -2047,8 +2395,10 @@
       if (S.moving && S.moving.m === m) continue;
       const mt = mClip(m);
       if (mt < t0 || mt > t0 + span) continue;
-      flag(Math.round((mt - t0) * pps), passesFilter(m) ? "#e3b341" : "rgba(227, 179, 65, 0.3)");
+      c.globalAlpha = passesFilter(m) ? 1 : 0.3;
+      flag(Math.round((mt - t0) * pps), colorHex(m.color));
     }
+    c.globalAlpha = 1;
 
     const px = Math.round(W / 2);
     c.fillStyle = "#ffffff";
@@ -2435,7 +2785,7 @@
       const i = tags.findIndex((x) => x.id === t.id);
       return i < 0 ? 1e9 : i;
     };
-    const chip = (id, label, suffix) => {
+    const chip = (id, label, suffix, t) => {
       const b = button("chip chip-small", null, () => {
         if (markerFilter.has(id)) markerFilter.delete(id);
         else markerFilter.add(id);
@@ -2445,9 +2795,10 @@
       b.setAttribute("aria-pressed", String(markerFilter.has(id)));
       b.append(el("span", null, label));
       if (suffix) b.append(el("span", "suffix", suffix));
+      tintTag(b, t);
       return b;
     };
-    for (const t of [...seen.values()].sort((a, b) => order(a) - order(b))) box.append(chip(t.id, t.name, t.suffix));
+    for (const t of [...seen.values()].sort((a, b) => order(a) - order(b))) box.append(chip(t.id, t.name, t.suffix, t));
     if (untagged || markerFilter.has(NO_TAG)) box.append(chip(NO_TAG, "No tag"));
     if (!box.children.length) box.append(el("span", "muted small", "No tags on this clip's markers yet."));
     if (markerFilter.size) {
@@ -2484,6 +2835,7 @@
     for (const m of shown) {
       const li = el("li", m.id === nearId ? "mrow near" : "mrow");
       li.dataset.id = m.id;
+      li.style.setProperty("--mc", colorHex(m.color));
       const mt = mClip(m);
       const main = button("mrow-main", null, () => seekMarker(m));
       main.append(el("span", "mrow-time", fmtTime(mt, true)));
@@ -2491,7 +2843,11 @@
       const sx = markerTags(m).filter((t) => t.suffix);
       if (sx.length) {
         const box = el("span", "mrow-tags");
-        for (const t of sx) box.append(el("span", "suffix", t.suffix));
+        for (const t of sx) {
+          const x = el("span", "suffix", t.suffix);
+          tintTag(x, t);
+          box.append(x);
+        }
         main.append(box);
       }
       const edit = button("mrow-edit", "Edit", () => openEditor(m, false));
@@ -2542,12 +2898,14 @@
   function openEditor(m, resume) {
     const current = markerTags(m);
     // picked: tag ids on; extra: tags deleted from the list that this marker still has.
-    ed = { m, resume, picked: new Set(current.map((t) => t.id)), extra: current.filter((t) => !tagById(t.id)) };
+    ed = { m, resume, picked: new Set(current.map((t) => t.id)), extra: current.filter((t) => !tagById(t.id)),
+      color: cleanColor(m.color) };
     $("#ed-time").textContent = `Marker at ${fmtTime(mClip(m), true)}`;
     $("#ed-note").value = m.note || "";
     $("#ed-newtag").hidden = true;
     $("#ed-newtag-error").hidden = true;
     renderEditorTags();
+    renderEditorColor();
     $("#sheet-editor").hidden = false;
     // Same tap that opened it, so iOS brings the keyboard up.
     $("#ed-note").focus();
@@ -2561,9 +2919,11 @@
       const list = [...tags, ...ed.extra].filter((t) => ed.picked.has(t.id));
       const before = markerTagRefs(m).map((t) => t.id).sort().join("|");
       const after = list.map((t) => t.id).sort().join("|");
-      if (note !== (m.note || "") || before !== after) {
+      if (note !== (m.note || "") || before !== after || ed.color !== cleanColor(m.color)) {
         m.note = note;
         setMarkerTags(m, list);
+        if (ed.color) m.color = ed.color;
+        else delete m.color;
         persistMarker(m);
       }
     }
@@ -2589,6 +2949,7 @@
       b.setAttribute("aria-pressed", String(ed.picked.has(t.id)));
       b.append(el("span", null, t.name));
       if (t.suffix) b.append(el("span", "suffix", t.suffix));
+      tintTag(b, t);
       return b;
     };
     // A tag deleted from the list still shows on markers that carry it.
@@ -2602,6 +2963,14 @@
       $("#ed-newtag").hidden = false;
       $("#ed-newtag-name").focus();
       await tagsReady(err);
+    }));
+  }
+
+  function renderEditorColor() {
+    if (!ed) return;
+    $("#ed-color").replaceChildren(...swatches(ed.color, (id) => {
+      ed.color = id;
+      renderEditorColor();
     }));
   }
 
@@ -2680,7 +3049,9 @@
   });
 
   function init() {
-    if (CFG.debug) window.__ms = { TP, DV, S, vodNow, mode: () => mode, rate: () => rate, tags: () => tags, syncOpenClip };   // automated tests only
+    if (CFG.debug) {   // automated tests only
+      window.__ms = { TP, DV, S, VZ, talk, vodNow, now, mode: () => mode, rate: () => rate, tags: () => tags, syncOpenClip, jumpTalk };
+    }
     const z = store.get("ms.zoom", 30);
     S.zoom = typeof z === "number" && z >= ZOOM_MIN && z <= ZOOM_MAX ? z : 30;
     const q = store.get("ms.quality", 480);
