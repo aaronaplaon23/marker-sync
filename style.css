@@ -231,6 +231,73 @@ code, .mono { font-family: var(--mono); }
 .wave-detail { height: 112px; background: var(--bg); border-bottom: 1px solid var(--border); }
 
 .action-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+
+.btn-track {
+  flex: none;
+  min-height: 44px;
+  max-width: 96px;
+  padding: 0 10px 0 12px;
+  gap: 6px;
+  color: var(--accent);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.btn-track::after {
+  content: "";
+  flex: none;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+}
+
+.zoomer {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-hi);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.zoomer button {
+  width: 40px;
+  min-height: 44px;
+  border: 0;
+  background: var(--surface-hi);
+  color: var(--t1);
+  font-size: 22px;
+  line-height: 1;
+}
+.zoomer button:active { background: var(--border-hi); }
+.zoom-label {
+  min-width: 40px;
+  padding: 0 4px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--t2);
+}
+
+.pick-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.pick-list button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  padding: 0 4px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  text-align: left;
+  font-size: 16px;
+  font-weight: 600;
+}
+.pick-list .pick-sub { flex: 1; font-size: 13px; font-weight: 400; color: var(--t2); }
+.pick-list button[aria-pressed="true"] { color: var(--accent); }
+.pick-list button[aria-pressed="true"]::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+.seg-wide { display: flex; width: 100%; }
+.seg-wide button { flex: 1; }
 .seg { display: inline-flex; flex: none; border: 1px solid var(--border-hi); border-radius: 9px; overflow: hidden; }
 .seg button {
   min-height: 40px;

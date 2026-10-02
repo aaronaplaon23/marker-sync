@@ -6,7 +6,6 @@
   const API = CFG.apiBase || "https://api.dropboxapi.com";
   const CONTENT = CFG.contentBase || "https://content.dropboxapi.com";
   const AUTHORIZE = CFG.authorizeUrl || "https://www.dropbox.com/oauth2/authorize";
-  const ZOOMS = [10, 30, 120, 600];
 
   /* ---------- helpers ---------- */
 
@@ -724,6 +723,9 @@
     markersError: null,
     zoom: 30,
     quality: 480,
+    tracks: [],
+    track: null,
+    waveCache: new Map(),
     dragClip: null,
     posSaved: 0,
     openToken: 0,
@@ -757,14 +759,17 @@
   /* Twitch reports its position about once a second while playing, and not at
      all after a seek while paused, so a +10 measured from what it reports lands
      short. The app keeps its own clock: set on every seek, run by the wall
-     clock while playing, and nudged when Twitch's reports disagree (reports
-     right after a seek are stale, so those are ignored). */
+     clock while playing, held still while Twitch is buffering (after a seek, or
+     when the connection stalls) so the playhead never runs ahead of the
+     picture, and nudged when Twitch's reports disagree. */
   const TP = {
     player: null, ready: false, playing: false, starting: false, everPlayed: false,
     base: 0, at: 0, guardUntil: 0, lastReport: null, offCount: 0, pendingSeek: null, hintTimer: 0,
+    seeking: false, sawBuffer: false, seekAt: 0, stalled: false,
   };
 
-  const vodNow = () => (TP.playing ? TP.base + (performance.now() - TP.at) / 1000 : TP.base);
+  const running = () => TP.playing && !TP.seeking && !TP.stalled;
+  const vodNow = () => (running() ? TP.base + (performance.now() - TP.at) / 1000 : TP.base);
 
   function setClock(v) {
     TP.base = v;
@@ -796,7 +801,7 @@
     $("#player").replaceChildren();
     $("#player-hint").hidden = true;
     Object.assign(TP, { player: null, ready: false, playing: false, starting: false, everPlayed: false,
-      lastReport: null, offCount: 0, pendingSeek: null });
+      lastReport: null, offCount: 0, pendingSeek: null, seeking: false, stalled: false });
     showPlaying(false);
   }
 
@@ -834,6 +839,10 @@
   }
 
   function onPlaying() {
+    // A "playing" notice that lands after a quick pause is stale; trust the player.
+    try {
+      if (TP.player && TP.player.isPaused && TP.player.isPaused()) return;
+    } catch { /* ignore */ }
     clearTimeout(TP.hintTimer);
     $("#player-hint").hidden = true;
     if (!TP.playing) {
@@ -853,6 +862,8 @@
     if (TP.playing) setClock(vodNow());
     TP.playing = false;
     TP.starting = false;
+    TP.seeking = false;
+    TP.stalled = false;
     showPlaying(false);
     requestDraw();
   }
@@ -885,6 +896,11 @@
     const end = S.vodDuration ? S.vodDuration - 0.5 : Infinity;
     v = clamp(Number(v) || 0, 0, end);
     setClock(v);
+    // While playing, hold the clock at the target until Twitch is actually
+    // playing from there again (see reconcile).
+    TP.seeking = TP.playing;
+    TP.sawBuffer = false;
+    TP.seekAt = performance.now();
     TP.guardUntil = performance.now() + 2000;
     TP.lastReport = null;
     TP.offCount = 0;
@@ -895,8 +911,38 @@
 
   const seekClip = (c) => seekVod(clipToVod(clamp(c, 0, S.duration)));
 
+  function playbackState() {
+    try {
+      const s = TP.player.getPlayerState && TP.player.getPlayerState();
+      return (s && s.playback) || null;
+    } catch {
+      return null;
+    }
+  }
+
   function reconcile() {
-    if (!TP.player || !TP.ready || performance.now() < TP.guardUntil) return;
+    if (!TP.player || !TP.ready) return;
+    const state = playbackState();
+    if (TP.playing) {
+      const since = performance.now() - TP.seekAt;
+      if (TP.seeking) {
+        if (state === "Buffering") TP.sawBuffer = true;
+        // Resume once Twitch has buffered and is playing again. If it never
+        // reported buffering (the spot was already loaded), go after a moment.
+        const resumed = state === "Playing" && (TP.sawBuffer || since > 350);
+        if (resumed || since > (state ? 6000 : 600)) {
+          TP.seeking = false;
+          setClock(TP.base);
+        }
+      } else if (state === "Buffering" && !TP.stalled) {
+        setClock(vodNow());       // stalled mid-play (slow connection): hold the playhead
+        TP.stalled = true;
+      } else if (state === "Playing" && TP.stalled) {
+        TP.stalled = false;
+        setClock(TP.base);
+      }
+    }
+    if (performance.now() < TP.guardUntil || TP.seeking || TP.stalled) return;
     let r;
     try { r = TP.player.getCurrentTime(); } catch { return; }
     if (typeof r !== "number" || !Number.isFinite(r) || r === TP.lastReport) return;
@@ -923,10 +969,6 @@
 
   const QUALITIES = [480, 360, 0];    // 0 = Twitch's auto
 
-  function setQualityButton() {
-    $("#quality").textContent = S.quality ? `${S.quality}p` : "Auto";
-  }
-
   function applyQuality() {
     if (!TP.player || !TP.everPlayed) return;
     let qs = [];
@@ -944,12 +986,89 @@
     }
   }
 
-  $("#quality").addEventListener("click", () => {
-    S.quality = QUALITIES[(QUALITIES.indexOf(S.quality) + 1) % QUALITIES.length];
-    store.set("ms.quality", S.quality);
-    setQualityButton();
-    applyQuality();
+  /* ---------- waveform tracks ---------- */
+  // Every OBS track has its own waveform file. Mic is the default each time
+  // the app opens; a pick sticks for the rest of the session.
+
+  let sessionTrack = null;
+
+  function trackList(manifest) {
+    if (Array.isArray(manifest.waveforms) && manifest.waveforms.length) return manifest.waveforms;
+    const w = manifest.waveform || {};
+    return [{ track: 0, label: "Mic", short: "Mic", file: w.file || "waveform.bin", size: w.size, rate: w.rate }];
+  }
+
+  function currentTrack() {
+    return S.tracks.find((t) => t.track === S.track) || S.tracks[0];
+  }
+
+  // Each track draws in its own color, so the waveform says which one it is.
+  const TRACK_RGB = { "Mic": [34, 211, 238], "Game": [77, 168, 255], "Voice chat": [110, 231, 160],
+    "VOD mix": [176, 124, 255], "Music": [244, 114, 182] };
+  function trackColor(alpha) {
+    const rgb = TRACK_RGB[(currentTrack() || {}).label] || TRACK_RGB.Mic;
+    return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
+  }
+
+  async function loadTrack(track) {
+    const t = S.tracks.find((x) => x.track === track) || S.tracks[0];
+    S.track = t.track;
+    $("#track").textContent = t.short || t.label;
+    $("#track").style.color = trackColor(1);
+    const clip = S.clip;
+    let peaks = S.waveCache.get(t.file);
+    if (!peaks) {
+      try {
+        peaks = new Uint8Array(await (await dbx.download(`${clip.folder}/${t.file}`)).arrayBuffer());
+      } catch (e) {
+        if (S.clip !== clip) return;
+        if (e instanceof AuthError) return needSignIn();
+        toast(`Couldn't load the ${t.label} waveform. ${errText(e)}`);
+        return;
+      }
+      if (S.clip !== clip) return;
+      S.waveCache.set(t.file, peaks);
+    }
+    if (S.track !== t.track) return;          // another track was picked meanwhile
+    S.peaks = peaks;
+    S.rate = t.rate || S.rate;
+    S.ref = peakRef(peaks);
+    overviewBars = null;
+    requestDraw();
+  }
+
+  function renderTrackList() {
+    const ul = $("#track-list");
+    ul.replaceChildren();
+    for (const t of S.tracks) {
+      const b = button("", null, () => {
+        sessionTrack = t.track;
+        loadTrack(t.track);
+        $("#sheet-view").hidden = true;
+      });
+      b.setAttribute("aria-pressed", String(t.track === S.track));
+      b.append(el("span", null, t.label));
+      b.append(el("span", "pick-sub", t.track ? `OBS track ${t.track}` : ""));
+      const li = el("li");
+      li.append(b);
+      ul.append(li);
+    }
+    for (const q of $$("[data-quality]")) q.setAttribute("aria-pressed", String(Number(q.dataset.quality) === S.quality));
+  }
+
+  $("#track").addEventListener("click", () => {
+    renderTrackList();
+    $("#sheet-view").hidden = false;
   });
+  $("#view-done").addEventListener("click", () => { $("#sheet-view").hidden = true; });
+  for (const q of $$("[data-quality]")) {
+    q.addEventListener("click", () => {
+      S.quality = Number(q.dataset.quality);
+      store.set("ms.quality", S.quality);
+      renderTrackList();
+      applyQuality();
+    });
+  }
 
   function savePos() {
     if (!S.clip) return;
@@ -966,6 +1085,9 @@
     S.sync = Array.isArray(tw.sync) && tw.sync.length ? tw.sync : [{ clip: 0, vod: tw.start || 0 }];
     S.vodDuration = tw.vod_duration || 0;
     S.peaks = null;
+    S.waveCache = new Map();
+    S.tracks = trackList(c.manifest);
+    S.track = S.tracks.some((t) => t.track === sessionTrack) ? sessionTrack : S.tracks[0].track;
     S.markers = [];
     S.markersError = null;
     S.dragClip = null;
@@ -976,8 +1098,9 @@
     show("#screen-clip");
     $("#clip-title").textContent = c.name;
     $("#t-dur").textContent = fmtTime(S.duration);
-    setZoomButtons();
-    setQualityButton();
+    $("#track").textContent = currentTrack().short || currentTrack().label;
+    $("#track").style.color = trackColor(1);
+    setZoomLabel();
     renderSync();
     renderMarkers("Loading markers");
     videoMsg("Loading the Twitch VOD");
@@ -986,18 +1109,8 @@
     createPlayer(typeof saved === "number" ? saved : clipToVod(0));
     requestDraw();
     ensureTags().catch(() => {});
-    try {
-      const wave = await (await dbx.download(`${c.folder}/waveform.bin`)).arrayBuffer();
-      if (token !== S.openToken) return;
-      S.peaks = new Uint8Array(wave);
-      S.ref = peakRef(S.peaks);
-      overviewBars = null;
-      requestDraw();
-    } catch (e) {
-      if (token !== S.openToken) return;
-      if (e instanceof AuthError) return needSignIn();
-      toast(`Couldn't load the waveform. ${errText(e)}`);
-    }
+    await loadTrack(S.track);
+    if (token !== S.openToken) return;
     try {
       await loadMarkers(c);
     } catch (e) {
@@ -1021,17 +1134,39 @@
   playBtn.addEventListener("click", togglePlay);
   for (const b of $$("[data-skip]")) b.addEventListener("click", () => seekVod(vodNow() + Number(b.dataset.skip)));
 
-  function setZoomButtons() {
-    for (const b of $$("[data-zoom]")) b.setAttribute("aria-pressed", String(Number(b.dataset.zoom) === S.zoom));
+  /* ---------- zoom ---------- */
+  // The zoomed strip shows S.zoom seconds across. − / + step through these;
+  // pinching on the strip zooms smoothly between them.
+
+  const ZOOM_STEPS = [5, 10, 20, 30, 60, 120, 300, 600, 1800, 3600];
+  const ZOOM_MIN = 3;
+  const ZOOM_MAX = 3600;
+
+  function fmtSpan(s) {
+    if (s < 60) return `${Math.round(s)}s`;
+    if (s < 3600) return `${Math.round(s / 60)}m`;
+    return `${Math.round(s / 3600)}h`;
   }
-  for (const b of $$("[data-zoom]")) {
-    b.addEventListener("click", () => {
-      S.zoom = Number(b.dataset.zoom);
-      store.set("ms.zoom", S.zoom);
-      setZoomButtons();
-      requestDraw();
-    });
+
+  function setZoomLabel() {
+    $("#zoom-label").textContent = fmtSpan(S.zoom);
   }
+
+  function setZoom(span, persist) {
+    S.zoom = clamp(span, ZOOM_MIN, ZOOM_MAX);
+    setZoomLabel();
+    if (persist !== false) store.set("ms.zoom", S.zoom);
+    requestDraw();
+  }
+
+  function zoomStep(dir) {
+    // From wherever a pinch left it, step to the next preset that way.
+    let next = dir > 0 ? ZOOM_STEPS.find((s) => s > S.zoom * 1.01) : [...ZOOM_STEPS].reverse().find((s) => s < S.zoom * 0.99);
+    if (next == null) next = dir > 0 ? ZOOM_MAX : ZOOM_STEPS[0];
+    setZoom(next);
+  }
+
+  for (const b of $$("[data-zoom-step]")) b.addEventListener("click", () => zoomStep(Number(b.dataset.zoomStep)));
 
   /* ---------- waveform ---------- */
 
@@ -1124,7 +1259,7 @@
     const mid = H / 2;
     const half = H / 2 - 2;
     if (overviewBars) {
-      c.fillStyle = "rgba(34, 211, 238, 0.7)";
+      c.fillStyle = trackColor(0.7);
       for (let x = 0; x < W; x++) {
         const h = Math.max(0.5, overviewBars[x] * half);
         c.fillRect(x, mid - h, 1, h * 2);
@@ -1183,7 +1318,7 @@
       const n = p.length;
       const rate = S.rate;
       const bw = Math.max(1, Math.round(dpr));
-      c.fillStyle = "#22d3ee";
+      c.fillStyle = trackColor(1);
       for (let x = 0; x < W; x += bw) {
         const ta = t0 + x / pps;
         const tb = t0 + (x + bw) / pps;
@@ -1225,8 +1360,48 @@
     c.fill();
   }
 
-  // Both strips show where you're dragging live but only tell Twitch once you
-  // let go: every Twitch seek re-buffers, so seeking mid-drag would stutter.
+  /* Scrubbing: dragging either strip pauses playback, moves the picture along
+     with your finger (a seek about twice a second, plus one when you rest),
+     and picks playback back up when you let go. Every Twitch seek re-buffers,
+     so seeking on every frame of the drag would only make it stutter. */
+  const SCRUB = { active: false, resume: false, last: 0, timer: 0 };
+
+  function scrubStart() {
+    if (SCRUB.active) return;
+    SCRUB.active = true;
+    SCRUB.resume = TP.playing || TP.starting;
+    if (SCRUB.resume) pauseVideo();
+  }
+
+  function scrubTo(c) {
+    S.dragClip = clamp(c, 0, S.duration);
+    requestDraw();
+    clearTimeout(SCRUB.timer);
+    const t = performance.now();
+    if (t - SCRUB.last > 450) {
+      SCRUB.last = t;
+      seekVod(clipToVod(S.dragClip));
+    } else {
+      SCRUB.timer = setTimeout(() => {
+        if (S.dragClip == null) return;
+        SCRUB.last = performance.now();
+        seekVod(clipToVod(S.dragClip));
+      }, 160);
+    }
+  }
+
+  function scrubEnd(c) {
+    clearTimeout(SCRUB.timer);
+    S.dragClip = null;
+    if (c != null) seekClip(c);
+    else requestDraw();
+    if (SCRUB.active && SCRUB.resume) playVideo();
+    SCRUB.active = false;
+  }
+
+  function capture(cv, e) {
+    try { cv.setPointerCapture(e.pointerId); } catch { /* synthetic or already gone */ }
+  }
 
   // Overview: tap or drag anywhere to jump.
   let ovDrag = false;
@@ -1236,54 +1411,80 @@
   }
   ov.addEventListener("pointerdown", (e) => {
     if (!S.duration) return;
-    ov.setPointerCapture(e.pointerId);
+    capture(ov, e);
     ovDrag = true;
-    S.dragClip = ovTime(e);
-    requestDraw();
+    scrubStart();
+    scrubTo(ovTime(e));
   });
   ov.addEventListener("pointermove", (e) => {
-    if (!ovDrag) return;
-    S.dragClip = ovTime(e);
-    requestDraw();
+    if (ovDrag) scrubTo(ovTime(e));
   });
   const ovEnd = () => {
     if (!ovDrag) return;
     ovDrag = false;
-    const t = S.dragClip;
-    S.dragClip = null;
-    seekClip(t);
+    scrubEnd(S.dragClip);
   };
   ov.addEventListener("pointerup", ovEnd);
   ov.addEventListener("pointercancel", ovEnd);
 
-  // Detail: drag the waveform under the fixed playhead to scrub, tap to jump there.
+  // Zoomed strip: drag the waveform under the fixed playhead to scrub, tap to
+  // jump there, pinch with two fingers to zoom.
+  const touches = new Map();
   let dd = null;
+  let pinch = null;
+
+  const spread = () => {
+    const [a, b] = [...touches.values()];
+    return Math.max(16, Math.hypot(a.x - b.x, a.y - b.y));
+  };
+
   dt.addEventListener("pointerdown", (e) => {
     if (!S.duration) return;
-    dt.setPointerCapture(e.pointerId);
-    dd = { id: e.pointerId, x: e.clientX, t: now(), moved: false };
+    capture(dt, e);
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size === 2) {
+      // A second finger turns the drag into a pinch; the first finger's drag is dropped.
+      if (dd && dd.moved) {
+        S.dragClip = null;
+        requestDraw();
+      }
+      dd = null;
+      pinch = { start: spread(), zoom: S.zoom };
+      return;
+    }
+    if (touches.size === 1) dd = { id: e.pointerId, x: e.clientX, t: now(), moved: false };
   });
   dt.addEventListener("pointermove", (e) => {
+    if (!touches.has(e.pointerId)) return;
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && touches.size === 2) {
+      setZoom(pinch.zoom * (pinch.start / spread()), false);
+      return;
+    }
     if (!dd || e.pointerId !== dd.id) return;
     const dx = e.clientX - dd.x;
     if (!dd.moved && Math.abs(dx) < 6) return;
+    if (!dd.moved) scrubStart();
     dd.moved = true;
-    S.dragClip = clamp(dd.t - (dx * S.zoom) / dt.clientWidth, 0, S.duration);
-    requestDraw();
+    scrubTo(dd.t - (dx * S.zoom) / dt.clientWidth);
   });
   function ddEnd(e, cancelled) {
+    touches.delete(e.pointerId);
+    if (pinch) {
+      if (touches.size < 2) {
+        pinch = null;
+        store.set("ms.zoom", S.zoom);
+      }
+      return;
+    }
     if (!dd || e.pointerId !== dd.id) return;
-    let t;
     if (dd.moved) {
-      t = S.dragClip;
+      scrubEnd(S.dragClip);
     } else if (!cancelled) {
       const r = dt.getBoundingClientRect();
-      t = dd.t + ((e.clientX - r.left) / r.width - 0.5) * S.zoom;
+      seekClip(dd.t + ((e.clientX - r.left) / r.width - 0.5) * S.zoom);
     }
     dd = null;
-    S.dragClip = null;
-    if (t != null) seekClip(t);
-    else requestDraw();
   }
   dt.addEventListener("pointerup", (e) => ddEnd(e, false));
   dt.addEventListener("pointercancel", (e) => ddEnd(e, true));
@@ -1522,6 +1723,7 @@
   for (const b of $$(".sheet-backdrop")) {
     b.addEventListener("click", () => {
       if (b.dataset.close === "editor") closeEditor(true);
+      else if (b.dataset.close === "view") $("#sheet-view").hidden = true;
       else $("#sheet-tags").hidden = true;
     });
   }
@@ -1545,7 +1747,7 @@
   function init() {
     if (CFG.debug) window.__ms = { TP, S, vodNow };   // automated tests only
     const z = store.get("ms.zoom", 30);
-    S.zoom = ZOOMS.includes(z) ? z : 30;
+    S.zoom = typeof z === "number" && z >= ZOOM_MIN && z <= ZOOM_MAX ? z : 30;
     const q = store.get("ms.quality", 480);
     S.quality = QUALITIES.includes(q) ? q : 480;
     renderSync();

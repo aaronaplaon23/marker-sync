@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=202610011604">
+<link rel="stylesheet" href="style.css?v=202610011815">
 <title>Marker Sync</title>
 </head>
 <body>
@@ -95,13 +95,12 @@
     <canvas id="wave-overview" class="wave wave-overview" aria-label="Whole clip mic waveform. Tap or drag to jump."></canvas>
     <canvas id="wave-detail" class="wave wave-detail" aria-label="Zoomed mic waveform. Drag to scrub, tap to jump."></canvas>
     <div class="action-row">
-      <div class="seg" role="group" aria-label="Zoom">
-        <button type="button" data-zoom="10">10s</button>
-        <button type="button" data-zoom="30">30s</button>
-        <button type="button" data-zoom="120">2m</button>
-        <button type="button" data-zoom="600">10m</button>
+      <button id="track" class="btn btn-track" type="button" aria-label="Choose which audio track's waveform to show">Mic</button>
+      <div class="zoomer" role="group" aria-label="Waveform zoom">
+        <button type="button" data-zoom-step="1" aria-label="Zoom out">&minus;</button>
+        <span id="zoom-label" class="zoom-label">30s</span>
+        <button type="button" data-zoom-step="-1" aria-label="Zoom in">+</button>
       </div>
-      <button id="quality" class="btn btn-speed" type="button" aria-label="Video quality">480p</button>
       <button id="add" class="btn btn-add" type="button" aria-label="Add marker here">+ Marker</button>
     </div>
   </div>
@@ -160,10 +159,30 @@
   </div>
 </div>
 
+<!-- Waveform track + video quality -->
+<div id="sheet-view" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close="view"></div>
+  <div class="sheet-panel">
+    <div class="sheet-head">
+      <span class="sheet-title">Waveform</span>
+      <button id="view-done" class="btn btn-primary" type="button">Done</button>
+    </div>
+    <p class="muted small">Which audio track the waveform shows. The video's sound doesn't change.</p>
+    <ul id="track-list" class="pick-list"></ul>
+    <div class="tag-head"><span class="muted small">Video quality</span></div>
+    <div class="seg seg-wide" role="group" aria-label="Video quality">
+      <button type="button" data-quality="480">480p</button>
+      <button type="button" data-quality="360">360p</button>
+      <button type="button" data-quality="0">Auto</button>
+    </div>
+    <p class="muted small">480p uses about 0.7 GB per hour of watching, 360p about 0.35 GB.</p>
+  </div>
+</div>
+
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js?v=202610011604"></script>
+<script src="config.js?v=202610011815"></script>
 <script src="https://player.twitch.tv/js/embed/v1.js"></script>
-<script src="app.js?v=202610011604"></script>
+<script src="app.js?v=202610011815"></script>
 </body>
 </html>
