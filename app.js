@@ -430,52 +430,106 @@
     }
   });
 
+  /* ---------- press and hold ---------- */
+  // iPhone's "hard press" is a press and hold: it fires after ms if the finger
+  // stays put, and the tap that ends it is swallowed.
+
+  function onLongPress(node, fire, ms = 450) {
+    let timer = 0;
+    let x = 0;
+    let y = 0;
+    let fired = false;
+    const cancel = () => clearTimeout(timer);
+    node.addEventListener("pointerdown", (e) => {
+      fired = false;
+      x = e.clientX;
+      y = e.clientY;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        fired = true;
+        fire(e);
+      }, ms);
+    });
+    node.addEventListener("pointermove", (e) => {
+      if (Math.hypot(e.clientX - x, e.clientY - y) > 8) cancel();
+    });
+    for (const n of ["pointerup", "pointercancel"]) node.addEventListener(n, cancel);
+    node.addEventListener("click", (e) => {
+      if (!fired) return;
+      fired = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
+    node.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
+
   /* ---------- tags ---------- */
+  // Every tag has a permanent id and markers point at it, so renaming a tag or
+  // changing its suffix changes it on every marker that has it, here and in
+  // the PC's CSVs. Tags from before ids get one made from their name, which is
+  // also how old markers (name only) find them.
 
   let tags = [];
   let tagsLoaded = false;
+  let editingTag = null;              // id of the tag open for editing in the Tags sheet
 
+  const cleanName = (s) => String(s || "").trim().replace(/\s+/g, " ");
+  const legacyTagId = (name) => `n:${cleanName(name).toLowerCase()}`;
+  const newTagId = () => `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const tagById = (id) => tags.find((t) => t.id === id) || null;
+
+  // Returns [tags, whether any were missing an id].
   function normalizeTags(list) {
     const out = [];
-    const seen = new Set();
+    const names = new Set();
+    const ids = new Set();
+    let added = false;
     for (const t of Array.isArray(list) ? list : []) {
-      const name = String((t && t.name) || "").trim();
-      const suffix = String((t && t.suffix) || "").trim();
-      if (name && !seen.has(name.toLowerCase())) {
-        seen.add(name.toLowerCase());
-        out.push({ name, suffix });
+      const name = cleanName(t && t.name);
+      const suffix = cleanName(t && t.suffix);
+      if (!name || names.has(name.toLowerCase())) continue;
+      let id = String((t && t.id) || "");
+      if (!id) {
+        id = legacyTagId(name);
+        added = true;
       }
+      if (ids.has(id)) id = newTagId();
+      names.add(name.toLowerCase());
+      ids.add(id);
+      out.push({ id, name, suffix });
     }
-    return out;
+    return [out, added];
   }
 
   async function ensureTags() {
     const pending = outbox.pendingFor("/tags.json").filter((o) => o.kind === "put").pop();
+    let added = false;
     if (pending) {
-      tags = normalizeTags((parseJson(pending.text) || {}).tags);
+      [tags, added] = normalizeTags((parseJson(pending.text) || {}).tags);
     } else {
       const meta = await dbx.meta("/tags.json");
       if (meta) {
-        tags = normalizeTags((parseJson(await readText(meta)) || {}).tags);
+        [tags, added] = normalizeTags((parseJson(await readText(meta)) || {}).tags);
       } else {
         // First run: writing it also makes Dropbox create the app folder on the PC.
         tags = [];
-        saveTags();
+        added = true;
       }
     }
     tagsLoaded = true;
+    if (added) saveTags();          // gives older tags their ids
   }
 
   function saveTags() {
-    outbox.put("/tags.json", JSON.stringify({ version: 1, tags }, null, 2));
+    outbox.put("/tags.json", JSON.stringify({ version: 2, tags }, null, 2));
   }
 
-  function validateTag(name, suffix) {
-    name = String(name || "").trim().replace(/\s+/g, " ");
-    suffix = String(suffix || "").trim().replace(/\s+/g, " ").toUpperCase();
+  function validateTag(name, suffix, except) {
+    name = cleanName(name);
+    suffix = cleanName(suffix).toUpperCase();
     if (!name) return "Give the tag a name.";
     if (!suffix) return "Give the tag a suffix. It's what gets added to the marker in Premiere.";
-    if (tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) return "You already have a tag with that name.";
+    if (tags.some((t) => t !== except && t.name.toLowerCase() === name.toLowerCase())) return "You already have a tag with that name.";
     return { name, suffix };
   }
 
@@ -491,10 +545,36 @@
     }
   }
 
-  function tagSuffixFor(name, m) {
-    const t = tags.find((x) => x.name === name);
-    if (t) return t.suffix;
-    return m && m.tag === name ? m.tag_suffix || null : null;
+  // What a marker carries: [{id, name, suffix}] as saved. Old markers have a
+  // single tag by name.
+  function markerTagRefs(m) {
+    const raw = Array.isArray(m.tags) ? m.tags : m.tag ? [{ name: m.tag, suffix: m.tag_suffix }] : [];
+    const out = [];
+    for (const r of raw) {
+      if (!r) continue;
+      const name = cleanName(r.name);
+      const id = String(r.id || "") || (name ? legacyTagId(name) : "");
+      if (id && !out.some((x) => x.id === id)) out.push({ id, name, suffix: cleanName(r.suffix) });
+    }
+    return out;
+  }
+
+  // The same tags as they're called now; a deleted tag keeps its saved name.
+  function markerTags(m) {
+    return markerTagRefs(m).map((r) => tagById(r.id)
+      || tags.find((t) => r.name && t.name.toLowerCase() === r.name.toLowerCase()) || r);
+  }
+
+  function setMarkerTags(m, list) {
+    const order = (t) => {
+      const i = tags.findIndex((x) => x.id === t.id);
+      return i < 0 ? 1e9 : i;
+    };
+    const sorted = list.slice().sort((a, b) => order(a) - order(b));
+    m.tags = sorted.map((t) => ({ id: t.id, name: t.name, suffix: t.suffix }));
+    m.tag = sorted.length ? sorted[0].name : null;          // for older versions of the PC side
+    m.tag_suffix = sorted.length ? sorted[0].suffix : null;
+    m.version = 3;
   }
 
   function renderTagList() {
@@ -507,19 +587,85 @@
       return;
     }
     for (const t of tags) {
-      const li = el("li");
+      if (t.id === editingTag) {
+        ul.append(tagEditRow(t));
+        continue;
+      }
+      const li = el("li", "tag-row");
+      li.dataset.id = t.id;
       li.append(el("span", "tag-name", t.name), el("span", "suffix", t.suffix));
       li.append(button("btn btn-ghost btn-danger btn-small", "Delete", () => {
         tags = tags.filter((x) => x !== t);
         saveTags();
         renderTagList();
       }));
+      onLongPress(li, () => {
+        editingTag = t.id;
+        renderTagList();
+        const input = $("#tags-list .tag-edit input");
+        if (input) input.focus();
+      });
       ul.append(li);
     }
   }
 
+  function tagEditRow(t) {
+    const li = el("li", "tag-edit");
+    const name = el("input", "input");
+    name.value = t.name;
+    name.maxLength = 40;
+    name.setAttribute("aria-label", "Tag name");
+    name.enterKeyHint = "next";
+    const suffix = el("input", "input input-suffix");
+    suffix.value = t.suffix;
+    suffix.maxLength = 12;
+    suffix.setAttribute("aria-label", "Suffix");
+    suffix.autocapitalize = "characters";
+    suffix.spellcheck = false;
+    suffix.enterKeyHint = "done";
+    const err = el("p", "error-text");
+    err.hidden = true;
+    const save = () => {
+      const r = validateTag(name.value, suffix.value, t);
+      if (typeof r === "string") {
+        err.textContent = r;
+        err.hidden = false;
+        return;
+      }
+      const changed = r.name !== t.name || r.suffix !== t.suffix;
+      Object.assign(t, r);
+      editingTag = null;
+      if (changed) {
+        saveTags();
+        toast(`${t.name} (${t.suffix}) updated on every marker that has it`);
+      }
+      renderTagList();
+      if (S.clip) {
+        renderMarkers();
+        requestDraw();
+      }
+    };
+    name.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); suffix.focus(); }
+    });
+    suffix.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); save(); }
+    });
+    const row = el("div", "newtag-row");
+    row.append(suffix, button("btn btn-primary", "Save", save));
+    const foot = el("div", "tag-edit-foot");
+    foot.append(el("span", "muted small", "Changes it on every marker with this tag."),
+      button("btn btn-ghost btn-small", "Cancel", () => {
+        editingTag = null;
+        renderTagList();
+      }));
+    li.append(name, row, err, foot);
+    return li;
+  }
+
   $("#clips-tags").addEventListener("click", async () => {
     $("#tags-error").hidden = true;
+    editingTag = null;
     $("#sheet-tags").hidden = false;
     renderTagList();
     if (await tagsReady($("#tags-error"))) renderTagList();
@@ -539,7 +685,7 @@
       err.hidden = false;
       return;
     }
-    tags.push(r);
+    tags.push({ id: newTagId(), ...r });
     saveTags();
     $("#tags-name").value = "";
     $("#tags-suffix").value = "";
@@ -716,18 +862,16 @@
     sync: [{ clip: 0, vod: 0 }],
     vodDuration: 0,
     streams: [],
-    peaks: null,
-    rate: 50,
-    ref: 64,
     duration: 0,
     markers: [],
     markersError: null,
     zoom: 30,
     quality: 480,
     tracks: [],
-    track: null,
-    waveCache: new Map(),
+    view: [],                // track numbers shown as waveform lanes
+    waveCache: new Map(),    // file -> {peaks, ref, rate}
     dragClip: null,
+    moving: null,            // a marker being moved: {m, from, at, resume}
     posSaved: 0,
     openToken: 0,
   };
@@ -801,6 +945,7 @@
     mode = playerPref === "direct" && !directBlocker() ? "direct" : "twitch";
     if (mode === "direct") directCreate(at);
     else twitchCreate(at);
+    renderSpeed();
   }
 
   function destroyPlayer() {
@@ -900,6 +1045,7 @@
       v.addEventListener(name, () => plog(name));
     }
     v.addEventListener("loadedmetadata", applyWant);
+    v.addEventListener("loadedmetadata", applyRate);
     v.addEventListener("loadeddata", () => videoMsg(null));
     v.addEventListener("play", () => { showPlaying(true); requestDraw(); });
     v.addEventListener("playing", () => { videoMsg(null); showPlaying(true); requestDraw(); });
@@ -920,6 +1066,7 @@
     // #t= starts it at the right spot in browsers that read it; applyWant
     // makes sure once the video has loaded.
     DV.el.src = `${s.url}#t=${Math.max(0, at).toFixed(2)}`;
+    applyRate();
   }
 
   function applyWant() {
@@ -1294,10 +1441,11 @@
   }
 
   /* ---------- waveform tracks ---------- */
-  // Every OBS track has its own waveform file. Mic is the default each time
-  // the app opens; a pick sticks for the rest of the session.
+  // Every OBS track has its own waveform file. Any number can be shown at
+  // once, each in its own lane and color; Mic alone is the default each time
+  // the app opens, and a pick sticks for the rest of the session.
 
-  let sessionTrack = null;
+  let sessionView = null;
 
   function trackList(manifest) {
     if (Array.isArray(manifest.waveforms) && manifest.waveforms.length) return manifest.waveforms;
@@ -1305,26 +1453,44 @@
     return [{ track: 0, label: "Mic", short: "Mic", file: w.file || "waveform.bin", size: w.size, rate: w.rate }];
   }
 
-  function currentTrack() {
-    return S.tracks.find((t) => t.track === S.track) || S.tracks[0];
-  }
+  const trackByNum = (n) => S.tracks.find((t) => t.track === n) || null;
 
   // Each track draws in its own color, so the waveform says which one it is.
   const TRACK_RGB = { "Mic": [34, 211, 238], "Game": [77, 168, 255], "Voice chat": [110, 231, 160],
     "VOD mix": [176, 124, 255], "Music": [244, 114, 182] };
-  function trackColor(alpha) {
-    const rgb = TRACK_RGB[(currentTrack() || {}).label] || TRACK_RGB.Mic;
-    return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
+  const rgbOf = (t) => TRACK_RGB[(t || {}).label] || TRACK_RGB.Mic;
+  const rgba = (rgb, a) => `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
+
+  // The shown tracks, in the manifest's order: [{t, w: {peaks, ref, rate} or undefined while loading, rgb}].
+  function lanes() {
+    const out = [];
+    for (const n of S.view) {
+      const t = trackByNum(n);
+      if (t) out.push({ t, w: S.waveCache.get(t.file), rgb: rgbOf(t) });
+    }
+    return out;
   }
 
-  async function loadTrack(track) {
-    const t = S.tracks.find((x) => x.track === track) || S.tracks[0];
-    S.track = t.track;
-    $("#track").textContent = t.short || t.label;
-    $("#track").style.color = trackColor(1);
+  const LANE_HEIGHTS = [112, 148, 176];      // the zoomed strip grows a little for more lanes
+
+  async function showTracks(nums) {
+    S.view = S.tracks.map((t) => t.track).filter((n) => nums.includes(n));
+    if (!S.view.length) S.view = [S.tracks[0].track];
+    const first = trackByNum(S.view[0]);
+    $("#track").textContent = (first.short || first.label) + (S.view.length > 1 ? ` +${S.view.length - 1}` : "");
+    $("#track").style.color = rgba(rgbOf(first), 1);
+    const h = `${LANE_HEIGHTS[Math.min(S.view.length, LANE_HEIGHTS.length) - 1]}px`;
+    if (dt.style.height !== h) {
+      dt.style.height = h;
+      resizeCanvases();
+    }
+    overviewBars = null;
+    requestDraw();
     const clip = S.clip;
-    let peaks = S.waveCache.get(t.file);
-    if (!peaks) {
+    await Promise.all(S.view.map(async (n) => {
+      const t = trackByNum(n);
+      if (!t || S.waveCache.has(t.file)) return;
+      let peaks;
       try {
         peaks = new Uint8Array(await (await dbx.download(`${clip.folder}/${t.file}`)).arrayBuffer());
       } catch (e) {
@@ -1334,14 +1500,10 @@
         return;
       }
       if (S.clip !== clip) return;
-      S.waveCache.set(t.file, peaks);
-    }
-    if (S.track !== t.track) return;          // another track was picked meanwhile
-    S.peaks = peaks;
-    S.rate = t.rate || S.rate;
-    S.ref = peakRef(peaks);
-    overviewBars = null;
-    requestDraw();
+      S.waveCache.set(t.file, { peaks, ref: peakRef(peaks), rate: t.rate || 50 });
+      overviewBars = null;
+      requestDraw();
+    }));
   }
 
   /* ---------- waveform and video sheet ---------- */
@@ -1352,12 +1514,16 @@
     const ul = $("#track-list");
     ul.replaceChildren();
     for (const t of S.tracks) {
+      const on = S.view.includes(t.track);
+      // Tap to add or remove a track; the last one stays.
       const b = button("", null, () => {
-        sessionTrack = t.track;
-        loadTrack(t.track);
-        closeViewSheet();
+        if (on && S.view.length === 1) return;
+        sessionView = on ? S.view.filter((n) => n !== t.track) : [...S.view, t.track];
+        showTracks(sessionView);
+        renderViewSheet();
       });
-      b.setAttribute("aria-pressed", String(t.track === S.track));
+      b.setAttribute("aria-pressed", String(on));
+      if (on) b.style.color = rgba(rgbOf(t), 1);
       b.append(el("span", null, t.label));
       b.append(el("span", "pick-sub", t.track ? `OBS track ${t.track}` : ""));
       const li = el("li");
@@ -1429,22 +1595,19 @@
     S.streams = (Array.isArray(tw.streams) ? tw.streams : [])
       .filter((s) => s && typeof s.url === "string" && /^https:\/\//.test(s.url) && s.height > 0);
     DV.failed = null;
-    S.peaks = null;
     S.waveCache = new Map();
     S.tracks = trackList(c.manifest);
-    S.track = S.tracks.some((t) => t.track === sessionTrack) ? sessionTrack : S.tracks[0].track;
+    S.view = [];
     S.markers = [];
     S.markersError = null;
     S.dragClip = null;
+    S.moving = null;
     S.duration = c.duration || 0;
-    S.rate = (c.manifest.waveform || {}).rate || 50;
     overviewBars = null;
     nearId = null;
     show("#screen-clip");
     $("#clip-title").textContent = c.name;
     $("#t-dur").textContent = fmtTime(S.duration);
-    $("#track").textContent = currentTrack().short || currentTrack().label;
-    $("#track").style.color = trackColor(1);
     setZoomLabel();
     renderSync();
     renderMarkers("Loading markers");
@@ -1453,7 +1616,7 @@
     startPlayer(typeof saved === "number" ? saved : clipToVod(0));
     requestDraw();
     ensureTags().catch(() => {});
-    await loadTrack(S.track);
+    await showTracks(sessionView || [S.tracks[0].track]);
     if (token !== S.openToken) return;
     try {
       await loadMarkers(c);
@@ -1512,6 +1675,105 @@
 
   for (const b of $$("[data-zoom-step]")) b.addEventListener("click", () => zoomStep(Number(b.dataset.zoomStep)));
 
+  /* ---------- speed ---------- */
+  // Tap toggles between 1x and the chosen speed (2x to start). Press and hold
+  // for 1.25 to 2x, slide to one and let go: it plays at that speed and
+  // becomes the one the tap toggles to. Direct player only: Twitch's player
+  // can't be sped up from outside.
+
+  const RATES = [2, 1.75, 1.5, 1.25];
+  let rate = 1;
+  let altRate = 2;
+  const speedBtn = $("#speed");
+  const speedMenu = $("#speed-menu");
+  let speedPress = null;
+  let speedSwallow = false;
+
+  function applyRate() {
+    if (!DV.el) return;
+    try {
+      DV.el.defaultPlaybackRate = rate;        // survives a reload (quality change)
+      DV.el.playbackRate = rate;
+    } catch { /* ignore */ }
+  }
+
+  function setRate(r) {
+    rate = r;
+    applyRate();
+    renderSpeed();
+  }
+
+  function renderSpeed() {
+    const on = mode === "direct";
+    speedBtn.textContent = `${on ? rate : 1}x`;
+    speedBtn.classList.toggle("on", on && rate !== 1);
+    speedBtn.classList.toggle("off", !on);
+    speedBtn.setAttribute("aria-label", on ? `Playback speed ${rate}x. Hold for other speeds.` : "Playback speed (Direct player only)");
+  }
+
+  function openSpeedMenu() {
+    for (const o of speedMenu.querySelectorAll("[data-rate]")) {
+      o.setAttribute("aria-checked", String(Number(o.dataset.rate) === altRate));
+      o.classList.remove("hover");
+    }
+    speedMenu.hidden = false;
+    const r = speedBtn.getBoundingClientRect();
+    const w = speedMenu.offsetWidth;
+    speedMenu.style.left = `${clamp(r.left + r.width / 2 - w / 2, 8, window.innerWidth - w - 8)}px`;
+    speedMenu.style.top = `${Math.max(8, r.top - speedMenu.offsetHeight - 8)}px`;
+  }
+
+  function speedOptionAt(e) {
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    return hit && hit.closest ? hit.closest("#speed-menu [data-rate]") : null;
+  }
+
+  speedBtn.addEventListener("pointerdown", (e) => {
+    if (mode !== "direct") return;
+    try { speedBtn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    const press = { id: e.pointerId, menu: false };
+    press.hold = setTimeout(() => {
+      if (speedPress !== press) return;
+      press.menu = true;
+      openSpeedMenu();
+    }, 400);
+    speedPress = press;
+  });
+  speedBtn.addEventListener("pointermove", (e) => {
+    if (!speedPress || !speedPress.menu) return;
+    const o = speedOptionAt(e);
+    for (const x of speedMenu.querySelectorAll("[data-rate]")) x.classList.toggle("hover", x === o);
+  });
+  const speedEnd = (e, cancelled) => {
+    const p = speedPress;
+    speedPress = null;
+    if (!p) return;
+    clearTimeout(p.hold);
+    if (!p.menu) return;                       // a tap: the click does it
+    speedSwallow = true;
+    const o = cancelled ? null : speedOptionAt(e);
+    speedMenu.hidden = true;
+    if (o) {
+      altRate = Number(o.dataset.rate);
+      store.set("ms.speed", altRate);
+      setRate(altRate);
+    }
+  };
+  speedBtn.addEventListener("pointerup", (e) => speedEnd(e, false));
+  speedBtn.addEventListener("pointercancel", (e) => speedEnd(e, true));
+  speedBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+  speedBtn.addEventListener("click", () => {
+    if (speedSwallow) {
+      speedSwallow = false;
+      return;
+    }
+    if (mode !== "direct") {
+      toast("Speed works with the Direct player (Mic ▾, Video player).");
+      return;
+    }
+    setRate(rate === 1 ? altRate : 1);
+  });
+
   /* ---------- waveform ---------- */
 
   let overviewBars = null;
@@ -1533,7 +1795,7 @@
     }
     return 255;
   }
-  const amp = (v) => Math.sqrt(Math.min(1, v / S.ref));
+  const amp = (v, ref) => Math.sqrt(Math.min(1, v / ref));
 
   function resizeCanvases() {
     const dpr = Math.min(3, window.devicePixelRatio || 1);
@@ -1589,36 +1851,50 @@
     c.clearRect(0, 0, W, H);
     const dur = S.duration;
     if (!dur) return;
-    if (S.peaks && (!overviewBars || overviewBars.length !== W)) {
-      const p = S.peaks;
-      const n = p.length;
-      overviewBars = new Float32Array(W);
-      for (let x = 0; x < W; x++) {
-        const a = Math.floor((x / W) * dur * S.rate);
-        const b = Math.max(a + 1, Math.floor(((x + 1) / W) * dur * S.rate));
-        let m = 0;
-        for (let i = a; i < b && i < n; i++) if (p[i] > m) m = p[i];
-        overviewBars[x] = amp(m);
+    const L = lanes();
+    const laneH = H / Math.max(1, L.length);
+    if (!overviewBars || overviewBars.W !== W) overviewBars = { W, by: new Map() };
+    L.forEach((lane, i) => {
+      if (!lane.w) return;
+      let bars = overviewBars.by.get(lane.t.file);
+      if (!bars) {
+        const { peaks: p, rate, ref } = lane.w;
+        const n = p.length;
+        bars = new Float32Array(W);
+        for (let x = 0; x < W; x++) {
+          const a = Math.floor((x / W) * dur * rate);
+          const b = Math.max(a + 1, Math.floor(((x + 1) / W) * dur * rate));
+          let m = 0;
+          for (let j = a; j < b && j < n; j++) if (p[j] > m) m = p[j];
+          bars[x] = amp(m, ref);
+        }
+        overviewBars.by.set(lane.t.file, bars);
       }
-    }
-    const mid = H / 2;
-    const half = H / 2 - 2;
-    if (overviewBars) {
-      c.fillStyle = trackColor(0.7);
+      const mid = laneH * i + laneH / 2;
+      const half = laneH / 2 - (L.length > 1 ? 1 : 2);
+      c.fillStyle = rgba(lane.rgb, 0.7);
       for (let x = 0; x < W; x++) {
-        const h = Math.max(0.5, overviewBars[x] * half);
+        const h = Math.max(0.5, bars[x] * half);
         c.fillRect(x, mid - h, 1, h * 2);
       }
-    }
+    });
     const x0 = ((t - S.zoom / 2) / dur) * W;
     const x1 = ((t + S.zoom / 2) / dur) * W;
     c.fillStyle = "rgba(230, 237, 243, 0.12)";
     c.fillRect(x0, 0, Math.max(3, x1 - x0), H);
     const unit = Math.max(1, Math.round(W / 390));
-    c.fillStyle = "#e3b341";
-    for (const m of S.markers) c.fillRect(Math.round((mClip(m) / dur) * W - unit / 2), 0, unit, H);
+    for (const m of S.markers) {
+      if (S.moving && S.moving.m === m) continue;
+      c.fillStyle = passesFilter(m) ? "#e3b341" : "rgba(227, 179, 65, 0.25)";
+      c.fillRect(Math.round((mClip(m) / dur) * W - unit / 2), 0, unit, H);
+    }
     c.fillStyle = "#ffffff";
     c.fillRect(Math.round((t / dur) * W - unit), 0, unit * 2, H);
+    if (S.moving) {
+      const x = Math.round((S.moving.at / dur) * W);
+      c.fillStyle = "#fde68a";
+      c.fillRect(x - unit * 1.5, 0, unit * 3, H);
+    }
   }
 
   const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
@@ -1633,8 +1909,6 @@
     const t0 = t - span / 2;
     const pps = W / span;
     const top = Math.round(18 * dpr);
-    const mid = Math.round(top + (H - top) / 2);
-    const half = (H - top) / 2 - 3 * dpr;
     const dur = S.duration;
 
     if (dur) {
@@ -1655,36 +1929,53 @@
       c.fillText(fmtTime(k), x + 3 * dpr, 2 * dpr);
     }
 
-    c.fillStyle = "#21262d";
-    c.fillRect(0, mid, W, Math.max(1, Math.round(dpr)));
-
-    if (S.peaks) {
-      const p = S.peaks;
-      const n = p.length;
-      const rate = S.rate;
-      const bw = Math.max(1, Math.round(dpr));
-      c.fillStyle = trackColor(1);
-      for (let x = 0; x < W; x += bw) {
-        const ta = t0 + x / pps;
-        const tb = t0 + (x + bw) / pps;
-        if (tb <= 0 || ta >= dur) continue;
-        let a = Math.floor(ta * rate);
-        let b = Math.floor(tb * rate);
-        if (b <= a) b = a + 1;
-        a = Math.max(0, a);
-        b = Math.min(n, b);
-        let m = 0;
-        for (let i = a; i < b; i++) if (p[i] > m) m = p[i];
-        const h = Math.max(0.5 * dpr, amp(m) * half);
-        c.fillRect(x, mid - h, bw, h * 2);
+    // One lane per shown track, each in its own color.
+    const L = lanes();
+    const laneH = (H - top) / Math.max(1, L.length);
+    const bw = Math.max(1, Math.round(dpr));
+    L.forEach((lane, i) => {
+      const y0 = top + laneH * i;
+      const mid = Math.round(y0 + laneH / 2);
+      const half = laneH / 2 - 3 * dpr;
+      if (i > 0) {
+        c.fillStyle = "#30363d";
+        c.fillRect(0, Math.round(y0), W, Math.max(1, Math.round(dpr)));
       }
-    }
+      c.fillStyle = "#21262d";
+      c.fillRect(0, mid, W, Math.max(1, Math.round(dpr)));
+      if (lane.w) {
+        const { peaks: p, rate, ref } = lane.w;
+        const n = p.length;
+        c.fillStyle = rgba(lane.rgb, 1);
+        for (let x = 0; x < W; x += bw) {
+          const ta = t0 + x / pps;
+          const tb = t0 + (x + bw) / pps;
+          if (tb <= 0 || ta >= dur) continue;
+          let a = Math.floor(ta * rate);
+          let b = Math.floor(tb * rate);
+          if (b <= a) b = a + 1;
+          a = Math.max(0, a);
+          b = Math.min(n, b);
+          let m = 0;
+          for (let j = a; j < b; j++) if (p[j] > m) m = p[j];
+          const h = Math.max(0.5 * dpr, amp(m, ref) * half);
+          c.fillRect(x, mid - h, bw, h * 2);
+        }
+      }
+      if (L.length > 1) {
+        // Lane name on a dark tab so it reads over its own waveform.
+        const name = lane.t.short || lane.t.label;
+        c.font = `700 ${Math.round(10 * dpr)}px -apple-system, system-ui, sans-serif`;
+        const w = c.measureText(name).width + 8 * dpr;
+        c.fillStyle = "rgba(13, 17, 23, 0.85)";
+        c.fillRect(2 * dpr, y0 + 2 * dpr, w, 14 * dpr);
+        c.fillStyle = rgba(lane.rgb, 1);
+        c.fillText(name, 6 * dpr, y0 + 4 * dpr);
+      }
+    });
 
-    c.fillStyle = "#e3b341";
-    for (const m of S.markers) {
-      const mt = mClip(m);
-      if (mt < t0 || mt > t0 + span) continue;
-      const x = Math.round((mt - t0) * pps);
+    const flag = (x, color) => {
+      c.fillStyle = color;
       c.fillRect(x - dpr, top, 2 * dpr, H - top);
       c.beginPath();
       c.moveTo(x - dpr, top);
@@ -1692,6 +1983,12 @@
       c.lineTo(x - dpr, top + 10 * dpr);
       c.closePath();
       c.fill();
+    };
+    for (const m of S.markers) {
+      if (S.moving && S.moving.m === m) continue;
+      const mt = mClip(m);
+      if (mt < t0 || mt > t0 + span) continue;
+      flag(Math.round((mt - t0) * pps), passesFilter(m) ? "#e3b341" : "rgba(227, 179, 65, 0.3)");
     }
 
     const px = Math.round(W / 2);
@@ -1703,6 +2000,23 @@
     c.lineTo(px, top + 6 * dpr);
     c.closePath();
     c.fill();
+
+    // A marker being moved: brighter, wider, with where it'll land.
+    if (S.moving && S.moving.at >= t0 && S.moving.at <= t0 + span) {
+      const x = Math.round((S.moving.at - t0) * pps);
+      c.fillStyle = "rgba(253, 230, 138, 0.18)";
+      c.fillRect(x - 8 * dpr, top, 16 * dpr, H - top);
+      flag(x, "#fde68a");
+      c.fillRect(x - 2 * dpr, top, 4 * dpr, H - top);
+      const label = fmtTime(S.moving.at, true);
+      c.font = `700 ${Math.round(12 * dpr)}px ui-monospace, Menlo, monospace`;
+      const tw = c.measureText(label).width + 10 * dpr;
+      const lx = clamp(x - tw / 2, 0, W - tw);
+      c.fillStyle = "#fde68a";
+      c.fillRect(lx, 0, tw, top - 2 * dpr);
+      c.fillStyle = "#0d1117";
+      c.fillText(label, lx + 5 * dpr, 2 * dpr);
+    }
   }
 
   /* Scrubbing: dragging either strip pauses playback, moves the picture along
@@ -1749,8 +2063,84 @@
     try { cv.setPointerCapture(e.pointerId); } catch { /* synthetic or already gone */ }
   }
 
-  // Overview: tap or drag anywhere to jump.
+  /* Moving a marker: press and hold its flag on either waveform until it
+     lifts, slide, let go. Playback pauses while it's held. */
+  const HOLD_MS = 450;
+
+  // The marker whose flag is under the finger, if any.
+  function markerAt(cv, clientX, slop) {
+    const r = cv.getBoundingClientRect();
+    const center = now();
+    const xOf = cv === dt
+      ? (mt) => r.left + ((mt - center) / S.zoom + 0.5) * r.width
+      : (mt) => r.left + (mt / S.duration) * r.width;
+    let best = null;
+    let bestD = slop;
+    for (const m of S.markers) {
+      const d = Math.abs(xOf(mClip(m)) - clientX);
+      if (d <= bestD) {
+        bestD = d;
+        best = m;
+      }
+    }
+    return best;
+  }
+
+  function pickUp(m) {
+    const resume = videoActive();
+    if (resume) pauseVideo();
+    S.moving = { m, from: mClip(m), at: mClip(m), resume };
+    if (navigator.vibrate) navigator.vibrate(12);
+    requestDraw();
+  }
+
+  function moveTo(c) {
+    if (!S.moving) return;
+    S.moving.at = clamp(c, 0, S.duration);
+    requestDraw();
+  }
+
+  function placeMarker(m, c) {
+    const v = Math.round(clipToVod(c) * 1000) / 1000;
+    m.vod_time = v;
+    m.vod_id = m.vod_id || S.vodId;
+    m.timestamp = Math.round(vodToClip(v) * 1000) / 1000;
+    persistMarker(m);
+  }
+
+  function drop(cancel) {
+    const mv = S.moving;
+    S.moving = null;
+    if (!mv) return;
+    if (!cancel && Math.abs(mv.at - mv.from) >= 0.05) {
+      const m = mv.m;
+      const before = { had: typeof m.vod_time === "number", vod_time: m.vod_time, vod_id: m.vod_id, timestamp: m.timestamp };
+      placeMarker(m, mv.at);
+      sortMarkers();
+      renderMarkers();
+      toast(`Marker moved to ${fmtTime(mClip(m), true)}`, {
+        label: "Undo",
+        run: () => {
+          if (before.had) Object.assign(m, { vod_time: before.vod_time, vod_id: before.vod_id });
+          else delete m.vod_time;
+          m.timestamp = before.timestamp;
+          persistMarker(m);
+          if (S.clip && S.clip.id === m.clip_id) {
+            sortMarkers();
+            renderMarkers();
+            requestDraw();
+          }
+        },
+      });
+    }
+    requestDraw();
+    if (mv.resume) playVideo();
+  }
+
+  // Overview: tap or drag anywhere to jump. On a marker's flag, a hold moves
+  // the marker instead; so there it waits to see which it is.
   let ovDrag = false;
+  let ovPress = null;
   function ovTime(e) {
     const r = ov.getBoundingClientRect();
     return clamp((e.clientX - r.left) / r.width, 0, 1) * S.duration;
@@ -1758,23 +2148,53 @@
   ov.addEventListener("pointerdown", (e) => {
     if (!S.duration) return;
     capture(ov, e);
+    const m = markerAt(ov, e.clientX, 12);
+    if (m) {
+      const press = { id: e.pointerId, x: e.clientX, moving: false };
+      press.hold = setTimeout(() => {
+        if (ovPress !== press) return;
+        press.moving = true;
+        pickUp(m);
+      }, HOLD_MS);
+      ovPress = press;
+      return;
+    }
     ovDrag = true;
     scrubStart();
     scrubTo(ovTime(e));
   });
   ov.addEventListener("pointermove", (e) => {
+    if (ovPress && e.pointerId === ovPress.id) {
+      if (ovPress.moving) {
+        moveTo(ovTime(e));
+        return;
+      }
+      if (Math.abs(e.clientX - ovPress.x) < 6) return;
+      clearTimeout(ovPress.hold);         // moved first: it's a scrub
+      ovPress = null;
+      ovDrag = true;
+      scrubStart();
+    }
     if (ovDrag) scrubTo(ovTime(e));
   });
-  const ovEnd = () => {
+  const ovEnd = (e, cancelled) => {
+    if (ovPress) {
+      const p = ovPress;
+      ovPress = null;
+      clearTimeout(p.hold);
+      if (p.moving) drop(cancelled);
+      else if (!cancelled) seekClip(ovTime(e));
+      return;
+    }
     if (!ovDrag) return;
     ovDrag = false;
     scrubEnd(S.dragClip);
   };
-  ov.addEventListener("pointerup", ovEnd);
-  ov.addEventListener("pointercancel", ovEnd);
+  ov.addEventListener("pointerup", (e) => ovEnd(e, false));
+  ov.addEventListener("pointercancel", (e) => ovEnd(e, true));
 
   // Zoomed strip: drag the waveform under the fixed playhead to scrub, tap to
-  // jump there, pinch with two fingers to zoom.
+  // jump there, pinch with two fingers to zoom, hold a marker's flag to move it.
   const touches = new Map();
   let dd = null;
   let pinch = null;
@@ -1784,21 +2204,41 @@
     return Math.max(16, Math.hypot(a.x - b.x, a.y - b.y));
   };
 
+  function ddTime(e) {
+    const r = dt.getBoundingClientRect();
+    return dd.t + ((e.clientX - r.left) / r.width - 0.5) * S.zoom;
+  }
+
   dt.addEventListener("pointerdown", (e) => {
     if (!S.duration) return;
     capture(dt, e);
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (touches.size === 2) {
-      // A second finger turns the drag into a pinch; the first finger's drag is dropped.
-      if (dd && dd.moved) {
-        S.dragClip = null;
-        requestDraw();
+      // A second finger turns it into a pinch; the first finger's drag or move is dropped.
+      if (dd) {
+        clearTimeout(dd.hold);
+        if (dd.moving) drop(true);
+        else if (dd.moved) {
+          S.dragClip = null;
+          requestDraw();
+        }
       }
       dd = null;
       pinch = { start: spread(), zoom: S.zoom };
       return;
     }
-    if (touches.size === 1) dd = { id: e.pointerId, x: e.clientX, t: now(), moved: false };
+    if (touches.size !== 1) return;
+    const press = { id: e.pointerId, x: e.clientX, t: now(), moved: false, moving: false, hold: 0 };
+    const m = markerAt(dt, e.clientX, 16);
+    if (m) {
+      press.hold = setTimeout(() => {
+        if (dd !== press || press.moved) return;
+        press.moving = true;
+        pickUp(m);
+        press.t = now();                   // the strip stops where it is
+      }, HOLD_MS);
+    }
+    dd = press;
   });
   dt.addEventListener("pointermove", (e) => {
     if (!touches.has(e.pointerId)) return;
@@ -1808,8 +2248,13 @@
       return;
     }
     if (!dd || e.pointerId !== dd.id) return;
+    if (dd.moving) {
+      moveTo(ddTime(e));
+      return;
+    }
     const dx = e.clientX - dd.x;
     if (!dd.moved && Math.abs(dx) < 6) return;
+    clearTimeout(dd.hold);
     if (!dd.moved) scrubStart();
     dd.moved = true;
     scrubTo(dd.t - (dx * S.zoom) / dt.clientWidth);
@@ -1824,16 +2269,19 @@
       return;
     }
     if (!dd || e.pointerId !== dd.id) return;
-    if (dd.moved) {
+    clearTimeout(dd.hold);
+    if (dd.moving) {
+      drop(cancelled);
+    } else if (dd.moved) {
       scrubEnd(S.dragClip);
     } else if (!cancelled) {
-      const r = dt.getBoundingClientRect();
-      seekClip(dd.t + ((e.clientX - r.left) / r.width - 0.5) * S.zoom);
+      seekClip(ddTime(e));
     }
     dd = null;
   }
   dt.addEventListener("pointerup", (e) => ddEnd(e, false));
   dt.addEventListener("pointercancel", (e) => ddEnd(e, true));
+  for (const cv of [ov, dt]) cv.addEventListener("contextmenu", (e) => e.preventDefault());
 
   /* ---------- markers ---------- */
 
@@ -1889,10 +2337,77 @@
     outbox.del(m._path);
   }
 
+  /* Filter: show only markers with any of the picked tags ("No tag" counts as
+     one). It stays set while the app is open; markers it hides are dimmed on
+     the waveforms rather than removed. */
+  const NO_TAG = "__none";
+  const markerFilter = new Set();
+  let filterOpen = false;
+
+  function passesFilter(m) {
+    if (!markerFilter.size) return true;
+    const ts = markerTags(m);
+    return ts.length ? ts.some((t) => markerFilter.has(t.id)) : markerFilter.has(NO_TAG);
+  }
+
+  function renderFilter() {
+    const btn = $("#filter");
+    btn.textContent = markerFilter.size ? `Filter · ${markerFilter.size}` : "Filter";
+    btn.classList.toggle("on", markerFilter.size > 0);
+    btn.setAttribute("aria-expanded", String(filterOpen));
+    const box = $("#filter-chips");
+    box.hidden = !filterOpen;
+    if (!filterOpen) return;
+    box.replaceChildren();
+    // The tags on this clip's markers, plus any picked ones, in tag-list order.
+    const seen = new Map();
+    let untagged = false;
+    for (const m of S.markers) {
+      const ts = markerTags(m);
+      if (!ts.length) untagged = true;
+      for (const t of ts) if (!seen.has(t.id)) seen.set(t.id, t);
+    }
+    for (const id of markerFilter) if (id !== NO_TAG && !seen.has(id) && tagById(id)) seen.set(id, tagById(id));
+    const order = (t) => {
+      const i = tags.findIndex((x) => x.id === t.id);
+      return i < 0 ? 1e9 : i;
+    };
+    const chip = (id, label, suffix) => {
+      const b = button("chip chip-small", null, () => {
+        if (markerFilter.has(id)) markerFilter.delete(id);
+        else markerFilter.add(id);
+        renderMarkers();
+        requestDraw();
+      });
+      b.setAttribute("aria-pressed", String(markerFilter.has(id)));
+      b.append(el("span", null, label));
+      if (suffix) b.append(el("span", "suffix", suffix));
+      return b;
+    };
+    for (const t of [...seen.values()].sort((a, b) => order(a) - order(b))) box.append(chip(t.id, t.name, t.suffix));
+    if (untagged || markerFilter.has(NO_TAG)) box.append(chip(NO_TAG, "No tag"));
+    if (!box.children.length) box.append(el("span", "muted small", "No tags on this clip's markers yet."));
+    if (markerFilter.size) {
+      box.append(button("chip chip-small chip-add", "Clear", () => {
+        markerFilter.clear();
+        renderMarkers();
+        requestDraw();
+      }));
+    }
+  }
+
+  $("#filter").addEventListener("click", () => {
+    filterOpen = !filterOpen;
+    renderFilter();
+  });
+
   function renderMarkers(loadingText) {
     const ul = $("#markers");
     ul.replaceChildren();
-    $("#marker-count").textContent = S.markers.length ? String(S.markers.length) : "";
+    const shown = S.markers.filter(passesFilter);
+    $("#marker-count").textContent = !S.markers.length ? ""
+      : markerFilter.size ? `${shown.length} of ${S.markers.length}` : String(S.markers.length);
+    renderFilter();
     if (S.markersError) {
       const li = el("li", "empty", S.markersError);
       li.classList.add("error-text");
@@ -1902,15 +2417,20 @@
       if (!S.markersError) ul.append(el("li", "empty", loadingText || "No markers yet. Tap + at a moment worth keeping."));
       return;
     }
-    for (const m of S.markers) {
+    if (!shown.length) ul.append(el("li", "empty", "No markers with those tags."));
+    for (const m of shown) {
       const li = el("li", m.id === nearId ? "mrow near" : "mrow");
       li.dataset.id = m.id;
       const mt = mClip(m);
       const main = button("mrow-main", null, () => seekMarker(m));
       main.append(el("span", "mrow-time", fmtTime(mt, true)));
       main.append(el("span", m.note ? "mrow-note" : "mrow-note dim", m.note || "No note"));
-      const suffix = m.tag ? tagSuffixFor(m.tag, m) : null;
-      if (suffix) main.append(el("span", "suffix", suffix));
+      const sx = markerTags(m).filter((t) => t.suffix);
+      if (sx.length) {
+        const box = el("span", "mrow-tags");
+        for (const t of sx) box.append(el("span", "suffix", t.suffix));
+        main.append(box);
+      }
       const edit = button("mrow-edit", "Edit", () => openEditor(m, false));
       edit.setAttribute("aria-label", `Edit marker at ${fmtTime(mt, true)}`);
       li.append(main, edit);
@@ -1940,9 +2460,9 @@
     pauseVideo();
     const stamp = new Date().toISOString();
     const m = {
-      version: 2, id: newId(), clip_id: S.clip.id, vod_id: S.vodId, vod_time: v,
+      version: 3, id: newId(), clip_id: S.clip.id, vod_id: S.vodId, vod_time: v,
       timestamp: Math.round(vodToClip(v) * 1000) / 1000,
-      note: "", tag: null, tag_suffix: null, created: stamp, updated: stamp,
+      note: "", tags: [], tag: null, tag_suffix: null, created: stamp, updated: stamp,
     };
     S.markers.push(m);
     sortMarkers();
@@ -1957,7 +2477,9 @@
   let ed = null;
 
   function openEditor(m, resume) {
-    ed = { m, resume, tag: m.tag || null };
+    const current = markerTags(m);
+    // picked: tag ids on; extra: tags deleted from the list that this marker still has.
+    ed = { m, resume, picked: new Set(current.map((t) => t.id)), extra: current.filter((t) => !tagById(t.id)) };
     $("#ed-time").textContent = `Marker at ${fmtTime(mClip(m), true)}`;
     $("#ed-note").value = m.note || "";
     $("#ed-newtag").hidden = true;
@@ -1973,12 +2495,12 @@
     const { m, resume } = ed;
     if (keep) {
       const note = $("#ed-note").value.trim().replace(/\s+/g, " ");
-      const tag = ed.tag;
-      const suffix = tag ? tagSuffixFor(tag, m) : null;
-      if (note !== (m.note || "") || tag !== (m.tag || null) || suffix !== (m.tag_suffix || null)) {
+      const list = [...tags, ...ed.extra].filter((t) => ed.picked.has(t.id));
+      const before = markerTagRefs(m).map((t) => t.id).sort().join("|");
+      const after = list.map((t) => t.id).sort().join("|");
+      if (note !== (m.note || "") || before !== after) {
         m.note = note;
-        m.tag = tag;
-        m.tag_suffix = suffix;
+        setMarkerTags(m, list);
         persistMarker(m);
       }
     }
@@ -1994,19 +2516,21 @@
     const box = $("#ed-tags");
     box.replaceChildren();
     if (!ed) return;
-    const chip = (name, suffix) => {
+    // Any number of tags; each chip toggles on its own.
+    const chip = (t) => {
       const b = button("chip", null, () => {
-        ed.tag = ed.tag === name ? null : name;
+        if (ed.picked.has(t.id)) ed.picked.delete(t.id);
+        else ed.picked.add(t.id);
         renderEditorTags();
       });
-      b.setAttribute("aria-pressed", String(ed.tag === name));
-      b.append(el("span", null, name));
-      if (suffix) b.append(el("span", "suffix", suffix));
+      b.setAttribute("aria-pressed", String(ed.picked.has(t.id)));
+      b.append(el("span", null, t.name));
+      if (t.suffix) b.append(el("span", "suffix", t.suffix));
       return b;
     };
     // A tag deleted from the list still shows on markers that carry it.
-    if (ed.tag && !tags.some((t) => t.name === ed.tag)) box.append(chip(ed.tag, ed.m.tag_suffix));
-    for (const t of tags) box.append(chip(t.name, t.suffix));
+    for (const t of ed.extra) box.append(chip(t));
+    for (const t of tags) box.append(chip(t));
     box.append(button("chip chip-add", "+ New tag", async () => {
       const err = $("#ed-newtag-error");
       err.hidden = true;
@@ -2028,9 +2552,10 @@
       err.hidden = false;
       return;
     }
-    tags.push(r);
+    const t = { id: newTagId(), ...r };
+    tags.push(t);
     saveTags();
-    if (ed) ed.tag = r.name;
+    if (ed) ed.picked.add(t.id);
     $("#ed-newtag").hidden = true;
     renderEditorTags();
   }
@@ -2091,12 +2616,14 @@
   });
 
   function init() {
-    if (CFG.debug) window.__ms = { TP, DV, S, vodNow, mode: () => mode };   // automated tests only
+    if (CFG.debug) window.__ms = { TP, DV, S, vodNow, mode: () => mode, rate: () => rate, tags: () => tags };   // automated tests only
     const z = store.get("ms.zoom", 30);
     S.zoom = typeof z === "number" && z >= ZOOM_MIN && z <= ZOOM_MAX ? z : 30;
     const q = store.get("ms.quality", 480);
     S.quality = QUALITIES.includes(q) ? q : 480;
     playerPref = store.get("ms.player", "direct") === "twitch" ? "twitch" : "direct";
+    const sp = store.get("ms.speed", 2);
+    altRate = RATES.includes(sp) ? sp : 2;
     renderSync();
     if (!APP_KEY) return show("#screen-setup");
     if (!auth.signedIn()) return showConnect();

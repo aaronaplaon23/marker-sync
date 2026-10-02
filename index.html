@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=202610011934">
+<link rel="stylesheet" href="style.css?v=202610021119">
 <title>Marker Sync</title>
 </head>
 <body>
@@ -101,14 +101,16 @@
         <span id="zoom-label" class="zoom-label">30s</span>
         <button type="button" data-zoom-step="-1" aria-label="Zoom in">+</button>
       </div>
+      <button id="speed" class="btn btn-speed" type="button" aria-label="Playback speed. Hold for other speeds.">1x</button>
       <button id="add" class="btn btn-add" type="button" aria-label="Add marker here">+ Marker</button>
     </div>
   </div>
   <div class="markers-wrap">
     <div class="markers-head">
-      <span>Markers</span>
-      <span id="marker-count" class="muted"></span>
+      <span>Markers <span id="marker-count" class="marker-count"></span></span>
+      <button id="filter" class="btn-filter" type="button" aria-expanded="false" aria-controls="filter-chips">Filter</button>
     </div>
+    <div id="filter-chips" class="chips filter-chips" hidden></div>
     <ul id="markers" class="marker-list"></ul>
   </div>
 </section>
@@ -146,7 +148,7 @@
       <span class="sheet-title">Tags</span>
       <button id="tags-done" class="btn btn-primary" type="button">Done</button>
     </div>
-    <p class="muted small">The suffix is added to the end of the marker name in Premiere: "Dies to zombie" tagged Funny Moments (FM) becomes "Dies to zombie FM".</p>
+    <p class="muted small">The suffix is added to the end of the marker name in Premiere: "Dies to zombie" tagged Funny Moments (FM) becomes "Dies to zombie FM". Hold a tag to rename it or change its suffix; every marker with it follows.</p>
     <form id="tags-form" class="newtag" autocomplete="off">
       <input id="tags-name" class="input" type="text" placeholder="Tag name" maxlength="40" enterkeyhint="next">
       <div class="newtag-row">
@@ -167,7 +169,7 @@
       <span class="sheet-title">Waveform and video</span>
       <button id="view-done" class="btn btn-primary" type="button">Done</button>
     </div>
-    <p class="muted small">Which audio track the waveform shows. The video's sound doesn't change.</p>
+    <p class="muted small">Which audio tracks the waveform shows, each in its own lane and color. Tap to add or remove one. The video's sound doesn't change.</p>
     <ul id="track-list" class="pick-list"></ul>
     <div class="tag-head"><span class="muted small">Video player</span></div>
     <div class="seg seg-wide" role="group" aria-label="Video player">
@@ -187,10 +189,18 @@
   </div>
 </div>
 
+<!-- Speed menu: appears above the speed button while it's held -->
+<div id="speed-menu" class="speed-menu" role="menu" aria-label="Playback speed" hidden>
+  <button type="button" role="menuitemradio" data-rate="2">2x</button>
+  <button type="button" role="menuitemradio" data-rate="1.75">1.75x</button>
+  <button type="button" role="menuitemradio" data-rate="1.5">1.5x</button>
+  <button type="button" role="menuitemradio" data-rate="1.25">1.25x</button>
+</div>
+
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js?v=202610011934"></script>
+<script src="config.js?v=202610021119"></script>
 <script src="https://player.twitch.tv/js/embed/v1.js"></script>
-<script src="app.js?v=202610011934"></script>
+<script src="app.js?v=202610021119"></script>
 </body>
 </html>
