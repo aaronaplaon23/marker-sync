@@ -715,6 +715,7 @@
     vodId: null,
     sync: [{ clip: 0, vod: 0 }],
     vodDuration: 0,
+    streams: [],
     peaks: null,
     rate: 50,
     ref: 64,
@@ -756,33 +757,114 @@
   // the PC moves them all with it.
   const mClip = (m) => (typeof m.vod_time === "number" ? vodToClip(m.vod_time) : m.timestamp);
 
-  /* Twitch reports its position about once a second while playing, and not at
-     all after a seek while paused, so a +10 measured from what it reports lands
-     short. The app keeps its own clock: set on every seek, run by the wall
-     clock while playing, held still while Twitch is buffering (after a seek, or
-     when the connection stalls) so the playhead never runs ahead of the
-     picture, and nudged when Twitch's reports disagree. */
-  const TP = {
-    player: null, ready: false, playing: false, starting: false, everPlayed: false,
-    base: 0, at: 0, guardUntil: 0, lastReport: null, offCount: 0, pendingSeek: null, hintTimer: 0,
-    seeking: false, sawBuffer: false, seekAt: 0, stalled: false,
-  };
+  /* ---------- the video ---------- */
+  // Two players sit behind the same few functions (vodNow, playVideo,
+  // pauseVideo, seekVod, videoActive):
+  //  - Direct: the phone's own video player streams the VOD straight from
+  //    Twitch's video servers, using links the PC saved in the manifest. It
+  //    knows its position exactly, seeks at once (paused too) and draws
+  //    nothing over the picture. Needs a browser that plays HLS itself, which
+  //    every iPhone does.
+  //  - Twitch: Twitch's embedded player, steered by messages. The backup for
+  //    clips sent before the links existed, other browsers, or a stream that
+  //    won't load.
 
-  const running = () => TP.playing && !TP.seeking && !TP.stalled;
-  const vodNow = () => (running() ? TP.base + (performance.now() - TP.at) / 1000 : TP.base);
+  let mode = null;                 // what's playing this clip: "direct" or "twitch"
+  let playerPref = "direct";       // the sheet's choice; Direct whenever it can
+  const PLOG = [];                 // recent player events, for the Player check
 
-  function setClock(v) {
-    TP.base = v;
-    TP.at = performance.now();
+  function plog(name) {
+    PLOG.push(name);
+    if (PLOG.length > 8) PLOG.shift();
+  }
+
+  let hlsOk = null;
+  function canPlayHls() {
+    if (hlsOk == null) {
+      try { hlsOk = !!document.createElement("video").canPlayType("application/vnd.apple.mpegurl"); } catch { hlsOk = false; }
+    }
+    return hlsOk;
+  }
+
+  // Why Direct can't be used for this clip, or null if it can.
+  function directBlocker() {
+    if (!S.streams.length) return "This clip has no direct links yet. Send it again from the PC's Phone tab to use Direct.";
+    if (!canPlayHls()) return "This browser can't play the direct stream, so Twitch's player is used.";
+    if (DV.failed) return "The direct stream didn't load this time, so Twitch's player is used.";
+    return null;
+  }
+
+  function startPlayer(at) {
+    destroyPlayer();
+    // A recording can start before the stream went live (negative VOD time).
+    at = clamp(Number(at) || 0, 0, S.vodDuration ? S.vodDuration - 0.5 : Infinity);
+    mode = playerPref === "direct" && !directBlocker() ? "direct" : "twitch";
+    if (mode === "direct") directCreate(at);
+    else twitchCreate(at);
+  }
+
+  function destroyPlayer() {
+    clearTimeout(TP.hintTimer);
+    if (DV.el) {
+      try {
+        DV.el.pause();
+        DV.el.removeAttribute("src");
+        DV.el.load();               // stops the download
+      } catch { /* ignore */ }
+    }
+    Object.assign(DV, { el: null, want: null, src: null });
+    $("#player").replaceChildren();
+    $("#player-hint").hidden = true;
+    Object.assign(TP, { player: null, ready: false, playing: false, starting: false, everPlayed: false,
+      lastReport: null, offCount: 0, seeking: false, stalled: false, want: null, resends: 0 });
+    PLOG.length = 0;
+    mode = null;
+    showPlaying(false);
+  }
+
+  const vodNow = () => (mode === "direct" ? directNow() : twitchNow());
+  const videoActive = () => (mode === "direct" ? !!DV.el && !DV.el.paused : TP.playing || TP.starting);
+
+  function playVideo() {
+    if (mode === "direct") directPlay();
+    else if (mode === "twitch") twitchPlay();
+  }
+
+  function pauseVideo() {
+    if (mode === "direct") {
+      if (DV.el) DV.el.pause();
+    } else if (mode === "twitch") {
+      twitchPause();
+    }
+  }
+
+  function togglePlay() {
+    if (videoActive()) pauseVideo();
+    else playVideo();
+  }
+
+  // fast: a quick, roughly placed seek for the middle of a drag.
+  function seekVod(v, fast) {
+    const end = S.vodDuration ? S.vodDuration - 0.5 : Infinity;
+    v = clamp(Number(v) || 0, 0, end);
+    if (mode === "direct") directSeek(v, fast);
+    else if (mode === "twitch") twitchSeek(v);
+    requestDraw();
+  }
+
+  const seekClip = (c) => seekVod(clipToVod(clamp(c, 0, S.duration)));
+
+  function reconcile() {
+    if (mode === "twitch") twitchReconcile();
+  }
+
+  function applyQuality() {
+    if (mode === "direct") directQuality();
+    else if (mode === "twitch") twitchQuality();
   }
 
   function now() {
     return S.dragClip != null ? S.dragClip : vodToClip(vodNow());
-  }
-
-  function twitchTime(t) {
-    t = Math.max(0, Math.floor(t));
-    return `${Math.floor(t / 3600)}h${Math.floor((t % 3600) / 60)}m${t % 60}s`;
   }
 
   function videoMsg(text) {
@@ -796,58 +878,251 @@
     playBtn.setAttribute("aria-label", on ? "Pause" : "Play");
   }
 
-  function destroyPlayer() {
-    clearTimeout(TP.hintTimer);
-    $("#player").replaceChildren();
-    $("#player-hint").hidden = true;
-    Object.assign(TP, { player: null, ready: false, playing: false, starting: false, everPlayed: false,
-      lastReport: null, offCount: 0, pendingSeek: null, seeking: false, stalled: false });
-    showPlaying(false);
+  /* Direct: a plain <video> whose currentTime is the VOD time, exact at any
+     moment, so there's no clock to keep. An iPhone loads nothing until the
+     first Play; a seek before that is remembered and applied once the video
+     knows its length. */
+  const DV = { el: null, want: null, src: null, failed: null };
+
+  function pickStream() {
+    const list = S.streams;
+    return list.filter((s) => s.height <= S.quality).sort((a, b) => b.height - a.height)[0]
+      || list.slice().sort((a, b) => a.height - b.height)[0];
   }
 
-  function createPlayer(startVod) {
-    destroyPlayer();
-    setClock(startVod);
+  function directCreate(at) {
+    const v = document.createElement("video");
+    v.playsInline = true;
+    v.setAttribute("playsinline", "");
+    v.setAttribute("webkit-playsinline", "");
+    v.preload = "metadata";
+    for (const name of ["loadedmetadata", "loadeddata", "playing", "pause", "waiting", "seeked", "ended", "error"]) {
+      v.addEventListener(name, () => plog(name));
+    }
+    v.addEventListener("loadedmetadata", applyWant);
+    v.addEventListener("loadeddata", () => videoMsg(null));
+    v.addEventListener("play", () => { showPlaying(true); requestDraw(); });
+    v.addEventListener("playing", () => { videoMsg(null); showPlaying(true); requestDraw(); });
+    v.addEventListener("pause", () => { showPlaying(false); requestDraw(); });
+    v.addEventListener("seeked", requestDraw);
+    v.addEventListener("error", () => directFailed());
+    v.addEventListener("click", togglePlay);
+    DV.el = v;
+    $("#player").append(v);
+    videoMsg("Tap Play to start the VOD");
+    directSource(at);
+  }
+
+  function directSource(at) {
+    const s = pickStream();
+    DV.src = s;
+    DV.want = at;
+    // #t= starts it at the right spot in browsers that read it; applyWant
+    // makes sure once the video has loaded.
+    DV.el.src = `${s.url}#t=${Math.max(0, at).toFixed(2)}`;
+  }
+
+  function applyWant() {
+    const v = DV.el;
+    if (!v || DV.want == null || v.readyState < 1) return;
+    const t = DV.want;
+    DV.want = null;
+    if (Math.abs(v.currentTime - t) > 0.05) {
+      try { v.currentTime = t; } catch { DV.want = t; }
+    }
+    requestDraw();
+  }
+
+  const directNow = () => (!DV.el ? 0 : DV.want != null ? DV.want : DV.el.currentTime);
+
+  function directPlay() {
+    const v = DV.el;
+    if (!v) return;
+    applyWant();
+    showPlaying(true);
+    let p;
+    try { p = v.play(); } catch (e) { p = Promise.reject(e); }
+    if (p && p.catch) {
+      p.catch((e) => {
+        if (v !== DV.el || (e && e.name === "AbortError")) return;   // paused or replaced before it started
+        showPlaying(!v.paused);
+        if (e && e.name === "NotAllowedError") toast("The phone didn't let it start. Tap Play again.");
+        else directFailed(e && e.name);
+      });
+    }
+    requestDraw();
+  }
+
+  function directSeek(t, fast) {
+    const v = DV.el;
+    if (!v) return;
+    if (v.readyState < 1) {
+      DV.want = t;
+      return;
+    }
+    DV.want = null;
+    try {
+      if (fast && typeof v.fastSeek === "function") v.fastSeek(t);
+      else v.currentTime = t;
+    } catch {
+      DV.want = t;
+    }
+  }
+
+  function directQuality() {
+    const s = pickStream();
+    if (!DV.el || !s || (DV.src && DV.src.url === s.url)) return;
+    const at = vodNow();
+    const playing = !DV.el.paused;
+    directSource(at);
+    if (playing) directPlay();
+  }
+
+  function directFailed(why) {
+    if (mode !== "direct" || DV.failed) return;
+    const v = DV.el;
+    DV.failed = (v && v.error && `error ${v.error.code}`) || why || "error";
+    const at = vodNow();
+    toast("The direct stream didn't load, so this clip is on Twitch's player for now.");
+    startPlayer(at);
+  }
+
+  /* Twitch: its player reports its position about twice a second while
+     playing, and its "playing" message arrives before its state says so, so
+     the app keeps its own clock: set on every seek, run by the wall clock
+     while playing, held still while Twitch buffers, and nudged when Twitch's
+     reports disagree. Commands go out whether or not Twitch has said it's
+     ready (an iPhone may never say so), and a seek Twitch didn't take is sent
+     again. */
+  const TP = {
+    player: null, ready: false, playing: false, starting: false, everPlayed: false,
+    base: 0, at: 0, guardUntil: 0, lastReport: null, offCount: 0, hintTimer: 0,
+    seeking: false, sawBuffer: false, seekAt: 0, stalled: false,
+    playAsked: -1e9, pauseAsked: -1e9, sentAt: -1e9, want: null, resends: 0,
+  };
+
+  const running = () => TP.playing && !TP.seeking && !TP.stalled;
+  const twitchNow = () => (running() ? TP.base + (performance.now() - TP.at) / 1000 : TP.base);
+
+  function setClock(v) {
+    TP.base = v;
+    TP.at = performance.now();
+  }
+
+  function twitchTime(t) {
+    t = Math.max(0, Math.floor(t));
+    return `${Math.floor(t / 3600)}h${Math.floor((t % 3600) / 60)}m${t % 60}s`;
+  }
+
+  function twitchCreate(at) {
+    setClock(at);
     const P = window.Twitch && window.Twitch.Player;
     if (!P) {
       videoMsg("The Twitch player didn't load. Check your connection, then reopen the clip.");
       return;
     }
+    videoMsg("Loading the Twitch VOD");
     // controls: false keeps Twitch's title, follow/sub buttons and bar off the
     // video; the waveforms and buttons below do the controlling.
     TP.player = new P("player", {
-      video: S.vodId, time: twitchTime(startVod), autoplay: false, controls: false,
+      video: S.vodId, time: twitchTime(at), autoplay: false, controls: false,
       width: "100%", height: "100%", parent: [location.hostname],
     });
-    TP.pendingSeek = startVod;
-    TP.player.addEventListener(P.READY, () => {
-      TP.ready = true;
-      videoMsg(null);
-      if (TP.pendingSeek != null) {
-        TP.player.seek(TP.pendingSeek);
-        TP.pendingSeek = null;
-      }
+    TP.want = at;                 // "time" is whole seconds; the exact spot follows on ready
+    const player = TP.player;
+    const poll = setInterval(() => {
+      if (TP.player !== player || TP.ready) clearInterval(poll);
+      else checkReady();
+    }, 250);
+    const on = (name, fn) => {
+      if (P[name]) TP.player.addEventListener(P[name], (arg) => { plog(P[name]); fn(arg); });
+    };
+    on("READY", markReady);
+    on("VIDEO_READY", markReady);
+    on("PLAY", onPlay);
+    on("PLAYING", onPlaying);
+    on("PAUSE", onPauseMessage);
+    on("ENDED", onPaused);
+    on("SEEK", onSeekMessage);
+    on("PLAYBACK_BLOCKED", () => {
+      TP.starting = false;
+      showPlaying(false);
+      $("#player-hint").hidden = false;
     });
-    TP.player.addEventListener(P.PLAY, () => {
-      TP.starting = true;
-      showPlaying(true);
-      requestDraw();
-    });
-    TP.player.addEventListener(P.PLAYING, onPlaying);
-    TP.player.addEventListener(P.PAUSE, onPaused);
-    if (P.ENDED) TP.player.addEventListener(P.ENDED, onPaused);
+  }
+
+  function markReady() {
+    if (TP.ready || !TP.player) return;
+    TP.ready = true;
+    videoMsg(null);
+    if (TP.want != null) sendSeek(TP.want);
+  }
+
+  function sendSeek(v) {
+    TP.sentAt = performance.now();
+    try { TP.player.seek(v); } catch { /* not loaded yet; sent again when it is */ }
+  }
+
+  // Moves the clock and Twitch to v. While playing, the clock holds at v until
+  // Twitch is actually playing from there again (see twitchReconcile).
+  function twitchGo(v) {
+    setClock(v);
+    TP.seeking = TP.playing;
+    TP.sawBuffer = false;
+    TP.seekAt = performance.now();
+    TP.guardUntil = performance.now() + 2000;
+    TP.offCount = 0;
+    if (TP.player) sendSeek(v);
+  }
+
+  function twitchSeek(v) {
+    TP.want = v;
+    TP.resends = 0;
+    twitchGo(v);
+  }
+
+  // Twitch confirms each seek with its position.
+  function onSeekMessage(arg) {
+    markReady();
+    if (arg && typeof arg.position === "number" && TP.want != null && Math.abs(arg.position - TP.want) < 0.25) {
+      TP.want = null;
+    }
+  }
+
+  // A seek still unconfirmed when playback starts may have been dropped (an
+  // iPhone can't seek a video it hasn't loaded yet), so it goes again now.
+  function resendSeek() {
+    if (TP.want == null) return;
+    const w = TP.want;
+    TP.want = null;
+    if (performance.now() - TP.sentAt > 700) twitchGo(w);
+  }
+
+  function onPlay() {
+    markReady();
+    // A "play" from before a pause we asked for is old news.
+    if (!TP.starting && !TP.playing && performance.now() - TP.pauseAsked < 1500) return;
+    TP.starting = true;
+    showPlaying(true);
+    resendSeek();
+    requestDraw();
   }
 
   function onPlaying() {
-    // A "playing" notice that lands after a quick pause is stale; trust the player.
-    try {
-      if (TP.player && TP.player.isPaused && TP.player.isPaused()) return;
-    } catch { /* ignore */ }
+    markReady();
+    const t = performance.now();
+    if (!TP.starting && !TP.playing && t - TP.pauseAsked < 1500) {
+      try { TP.player.pause(); } catch { /* ignore */ }     // old news; make sure it's paused
+      return;
+    }
     clearTimeout(TP.hintTimer);
     $("#player-hint").hidden = true;
+    resendSeek();
     if (!TP.playing) {
       TP.playing = true;
       setClock(TP.base);       // the clock starts when the picture does, not when play was pressed
+      // Twitch's next report or two can still be from before it started.
+      TP.guardUntil = Math.max(TP.guardUntil, t + 1500);
     }
     TP.starting = false;
     showPlaying(true);
@@ -859,7 +1134,7 @@
   }
 
   function onPaused() {
-    if (TP.playing) setClock(vodNow());
+    if (TP.playing) setClock(twitchNow());
     TP.playing = false;
     TP.starting = false;
     TP.seeking = false;
@@ -868,11 +1143,20 @@
     requestDraw();
   }
 
-  function playVideo() {
+  function onPauseMessage() {
+    const t = performance.now();
+    // Twitch pauses for a moment inside every seek made while playing, and a
+    // pause from before a play we asked for is old news.
+    if ((TP.playing || TP.starting) && (t - TP.sentAt < 1200 || t - TP.playAsked < 1500)) return;
+    onPaused();
+  }
+
+  function twitchPlay() {
     if (!TP.player) return;
     TP.starting = true;
+    TP.playAsked = performance.now();
     showPlaying(true);
-    try { TP.player.play(); } catch { /* not ready yet */ }
+    try { TP.player.play(); } catch { /* not loaded yet */ }
     clearTimeout(TP.hintTimer);
     // An iPhone may only let a tap on the video itself start it the first time.
     TP.hintTimer = setTimeout(() => {
@@ -881,35 +1165,12 @@
     requestDraw();
   }
 
-  function pauseVideo() {
+  function twitchPause() {
     if (!TP.player) return;
+    TP.pauseAsked = performance.now();
     onPaused();                // freeze the clock at the moment of the tap
-    try { TP.player.pause(); } catch { /* not ready yet */ }
+    try { TP.player.pause(); } catch { /* not loaded yet */ }
   }
-
-  function togglePlay() {
-    if (TP.playing || TP.starting) pauseVideo();
-    else playVideo();
-  }
-
-  function seekVod(v) {
-    const end = S.vodDuration ? S.vodDuration - 0.5 : Infinity;
-    v = clamp(Number(v) || 0, 0, end);
-    setClock(v);
-    // While playing, hold the clock at the target until Twitch is actually
-    // playing from there again (see reconcile).
-    TP.seeking = TP.playing;
-    TP.sawBuffer = false;
-    TP.seekAt = performance.now();
-    TP.guardUntil = performance.now() + 2000;
-    TP.lastReport = null;
-    TP.offCount = 0;
-    if (TP.player && TP.ready) TP.player.seek(v);
-    else TP.pendingSeek = v;
-    requestDraw();
-  }
-
-  const seekClip = (c) => seekVod(clipToVod(clamp(c, 0, S.duration)));
 
   function playbackState() {
     try {
@@ -920,11 +1181,22 @@
     }
   }
 
-  function reconcile() {
-    if (!TP.player || !TP.ready) return;
+  // Twitch is talking to us once its state has the VOD's length, "ready"
+  // message or not. Checked on a timer too, since nothing redraws while paused.
+  function checkReady() {
+    if (!TP.player || TP.ready) return;
+    let dur = 0;
+    try { dur = TP.player.getDuration() || 0; } catch { /* ignore */ }
+    if (dur > 0) markReady();
+  }
+
+  function twitchReconcile() {
+    if (!TP.player) return;
+    const t = performance.now();
+    checkReady();
     const state = playbackState();
     if (TP.playing) {
-      const since = performance.now() - TP.seekAt;
+      const since = t - TP.seekAt;
       if (TP.seeking) {
         if (state === "Buffering") TP.sawBuffer = true;
         // Resume once Twitch has buffered and is playing again. If it never
@@ -935,55 +1207,90 @@
           setClock(TP.base);
         }
       } else if (state === "Buffering" && !TP.stalled) {
-        setClock(vodNow());       // stalled mid-play (slow connection): hold the playhead
+        setClock(twitchNow());    // stalled mid-play (slow connection): hold the playhead
         TP.stalled = true;
       } else if (state === "Playing" && TP.stalled) {
         TP.stalled = false;
         setClock(TP.base);
+      } else if (state === "Idle" && t - TP.sentAt > 1500 && t - TP.playAsked > 1500) {
+        onPaused();               // paused some way we didn't hear about
+        return;
       }
     }
-    if (performance.now() < TP.guardUntil || TP.seeking || TP.stalled) return;
     let r;
     try { r = TP.player.getCurrentTime(); } catch { return; }
     if (typeof r !== "number" || !Number.isFinite(r) || r === TP.lastReport) return;
     const prev = TP.lastReport;
     TP.lastReport = r;
+    // A report that lands during a seek or a stall is noted, so the next one
+    // counts as new, but not acted on: it can be from before.
+    if (t < TP.guardUntil || TP.seeking || TP.stalled) return;
     if (!TP.playing) {
-      // Play was asked for and the time is moving, even without a PLAYING event.
-      if (TP.starting && prev !== null && r > prev + 0.2) {
+      // The time is moving, so it's playing, "playing" message or not.
+      const moving = prev !== null && r > prev + 0.2;
+      if (moving && (TP.starting || (state === "Playing" && t - TP.pauseAsked > 1500))) {
+        TP.starting = true;
         setClock(r);
         onPlaying();
       }
       return;
     }
-    // Past the guard, a changed report is from after the seek (Twitch reports
-    // about every second), so it can correct the clock straight away.
-    const d = r - vodNow();
-    if (Math.abs(d) < 0.35) {
+    // Past the guard, a changed report is from after the last seek, and fresh
+    // (Twitch sends its time with each state message).
+    const d = r - twitchNow();
+    if (Math.abs(d) < 3) {
+      TP.want = null;
       TP.offCount = 0;
-    } else if (Math.abs(d) < 5 || ++TP.offCount >= 3) {
-      setClock(r);              // small drift, or Twitch has insisted three times
+      if (Math.abs(d) >= 0.1) setClock(r);
+      return;
+    }
+    // Far off: Twitch didn't take the last seek. Send it again (twice at
+    // most), then believe Twitch.
+    if (TP.resends < 2) {
+      TP.resends++;
+      twitchGo(twitchNow());
+    } else if (++TP.offCount >= 3) {
+      setClock(r);
       TP.offCount = 0;
     }
   }
 
-  const QUALITIES = [480, 360, 0];    // 0 = Twitch's auto
+  const QUALITIES = [720, 480, 360];
 
-  function applyQuality() {
+  function twitchQuality() {
     if (!TP.player || !TP.everPlayed) return;
     let qs = [];
     try { qs = TP.player.getQualities() || []; } catch { return; }
-    let pick = null;
-    if (!S.quality) {
-      pick = qs.find((q) => (q.group || q.name) === "auto");
-    } else {
-      const sized = qs.filter((q) => q.height);
-      pick = sized.filter((q) => q.height <= S.quality).sort((a, b) => b.height - a.height)[0]
-        || sized.sort((a, b) => a.height - b.height)[0];
-    }
+    const sized = qs.filter((q) => q.height);
+    const pick = sized.filter((q) => q.height <= S.quality).sort((a, b) => b.height - a.height)[0]
+      || sized.sort((a, b) => a.height - b.height)[0];
     if (pick) {
       try { TP.player.setQuality(pick.group || pick.name); } catch { /* ignore */ }
     }
+  }
+
+  /* The sheet's Player check: what the player is telling the app, live, so a
+     problem on the phone can be screenshotted. */
+  function renderPlayerCheck() {
+    const at = (x) => (typeof x === "number" && Number.isFinite(x) ? fmtTime(x, true) : "?");
+    const lines = [];
+    if (mode === "direct" && DV.el) {
+      const v = DV.el;
+      const st = v.error ? `error ${v.error.code}` : v.paused ? "paused" : v.readyState < 3 ? "loading" : "playing";
+      lines.push(`Direct ${DV.src ? `${DV.src.height}p` : ""} · ${st} · loaded ${v.readyState}/4`);
+      lines.push(`video ${at(v.currentTime)} · app ${at(vodNow())}${DV.want != null ? " · waiting for Play" : ""}`);
+    } else if (mode === "twitch" && TP.player) {
+      let r = null;
+      try { r = TP.player.getCurrentTime(); } catch { /* ignore */ }
+      const st = TP.playing ? "playing" : TP.starting ? "starting" : "paused";
+      lines.push(`Twitch · ${TP.ready ? "ready" : "not ready"} · says ${playbackState() || "nothing"} · ${st}`);
+      lines.push(`twitch ${at(r)} · app ${at(vodNow())}${TP.want != null ? ` · seek to ${at(TP.want)} unconfirmed` : ""}`);
+      if (DV.failed) lines.push(`direct stream failed (${DV.failed})`);
+    } else {
+      lines.push("No video");
+    }
+    lines.push(`events: ${PLOG.join(", ") || "none yet"}`);
+    $("#player-check").textContent = lines.join("\n");
   }
 
   /* ---------- waveform tracks ---------- */
@@ -1037,14 +1344,18 @@
     requestDraw();
   }
 
-  function renderTrackList() {
+  /* ---------- waveform and video sheet ---------- */
+
+  let checkTimer = 0;
+
+  function renderViewSheet() {
     const ul = $("#track-list");
     ul.replaceChildren();
     for (const t of S.tracks) {
       const b = button("", null, () => {
         sessionTrack = t.track;
         loadTrack(t.track);
-        $("#sheet-view").hidden = true;
+        closeViewSheet();
       });
       b.setAttribute("aria-pressed", String(t.track === S.track));
       b.append(el("span", null, t.label));
@@ -1053,20 +1364,51 @@
       li.append(b);
       ul.append(li);
     }
+    const blocker = directBlocker();
+    for (const b of $$("[data-player]")) b.setAttribute("aria-pressed", String(b.dataset.player === mode));
+    // A failed stream can be retried; no links or no HLS can't.
+    $("[data-player='direct']").disabled = !!blocker && !DV.failed;
+    $("#player-note").textContent = mode === "direct"
+      ? "Direct plays the VOD in the phone's own player: exact time, nothing over the picture. Twitch is the backup."
+      : blocker || "Twitch's own player, the backup. Direct is more exact.";
     for (const q of $$("[data-quality]")) q.setAttribute("aria-pressed", String(Number(q.dataset.quality) === S.quality));
+    renderPlayerCheck();
   }
 
-  $("#track").addEventListener("click", () => {
-    renderTrackList();
+  function openViewSheet() {
+    renderViewSheet();
     $("#sheet-view").hidden = false;
-  });
-  $("#view-done").addEventListener("click", () => { $("#sheet-view").hidden = true; });
+    clearInterval(checkTimer);
+    checkTimer = setInterval(renderPlayerCheck, 500);
+  }
+
+  function closeViewSheet() {
+    $("#sheet-view").hidden = true;
+    clearInterval(checkTimer);
+  }
+
+  $("#track").addEventListener("click", openViewSheet);
+  $("#view-done").addEventListener("click", closeViewSheet);
   for (const q of $$("[data-quality]")) {
     q.addEventListener("click", () => {
       S.quality = Number(q.dataset.quality);
       store.set("ms.quality", S.quality);
-      renderTrackList();
       applyQuality();
+      renderViewSheet();
+    });
+  }
+  for (const b of $$("[data-player]")) {
+    b.addEventListener("click", () => {
+      const want = b.dataset.player;
+      if (want === mode) return;
+      playerPref = want;
+      store.set("ms.player", want);
+      if (want === "direct") DV.failed = null;       // try the stream again
+      const at = S.dragClip != null ? clipToVod(S.dragClip) : vodNow();
+      const resume = videoActive();
+      startPlayer(at);
+      if (resume) playVideo();
+      renderViewSheet();
     });
   }
 
@@ -1084,6 +1426,9 @@
     S.vodId = tw.vod_id;
     S.sync = Array.isArray(tw.sync) && tw.sync.length ? tw.sync : [{ clip: 0, vod: tw.start || 0 }];
     S.vodDuration = tw.vod_duration || 0;
+    S.streams = (Array.isArray(tw.streams) ? tw.streams : [])
+      .filter((s) => s && typeof s.url === "string" && /^https:\/\//.test(s.url) && s.height > 0);
+    DV.failed = null;
     S.peaks = null;
     S.waveCache = new Map();
     S.tracks = trackList(c.manifest);
@@ -1103,10 +1448,9 @@
     setZoomLabel();
     renderSync();
     renderMarkers("Loading markers");
-    videoMsg("Loading the Twitch VOD");
     resizeCanvases();
     const saved = (store.get("ms.vodpos", {}) || {})[c.id];
-    createPlayer(typeof saved === "number" ? saved : clipToVod(0));
+    startPlayer(typeof saved === "number" ? saved : clipToVod(0));
     requestDraw();
     ensureTags().catch(() => {});
     await loadTrack(S.track);
@@ -1230,11 +1574,12 @@
       $("#t-now").textContent = fmtTime(t, true);
       updateNear(t);
     }
-    if (TP.playing && performance.now() - S.posSaved > 3000) {
+    const active = videoActive();
+    if (active && performance.now() - S.posSaved > 3000) {
       S.posSaved = performance.now();
       savePos();
     }
-    if (TP.playing || TP.starting || S.dragClip != null) raf = requestAnimationFrame(frame);
+    if (active || S.dragClip != null) raf = requestAnimationFrame(frame);
   }
 
   function drawOverview(t) {
@@ -1361,15 +1706,16 @@
   }
 
   /* Scrubbing: dragging either strip pauses playback, moves the picture along
-     with your finger (a seek about twice a second, plus one when you rest),
-     and picks playback back up when you let go. Every Twitch seek re-buffers,
-     so seeking on every frame of the drag would only make it stutter. */
+     with your finger, and picks playback back up when you let go. The phone's
+     own player can take a quick seek every few frames; every Twitch seek
+     re-buffers, so Twitch gets one about twice a second plus one when you
+     rest, or it would only stutter. The exact seek comes on release. */
   const SCRUB = { active: false, resume: false, last: 0, timer: 0 };
 
   function scrubStart() {
     if (SCRUB.active) return;
     SCRUB.active = true;
-    SCRUB.resume = TP.playing || TP.starting;
+    SCRUB.resume = videoActive();
     if (SCRUB.resume) pauseVideo();
   }
 
@@ -1378,14 +1724,14 @@
     requestDraw();
     clearTimeout(SCRUB.timer);
     const t = performance.now();
-    if (t - SCRUB.last > 450) {
+    if (t - SCRUB.last > (mode === "direct" ? 120 : 450)) {
       SCRUB.last = t;
-      seekVod(clipToVod(S.dragClip));
+      seekVod(clipToVod(S.dragClip), true);
     } else {
       SCRUB.timer = setTimeout(() => {
         if (S.dragClip == null) return;
         SCRUB.last = performance.now();
-        seekVod(clipToVod(S.dragClip));
+        seekVod(clipToVod(S.dragClip), true);
       }, 160);
     }
   }
@@ -1590,7 +1936,7 @@
   $("#add").addEventListener("click", () => {
     if (!S.clip) return;
     const v = Math.round((S.dragClip != null ? clipToVod(S.dragClip) : vodNow()) * 1000) / 1000;
-    const resume = TP.playing || TP.starting;
+    const resume = videoActive();
     pauseVideo();
     const stamp = new Date().toISOString();
     const m = {
@@ -1723,7 +2069,7 @@
   for (const b of $$(".sheet-backdrop")) {
     b.addEventListener("click", () => {
       if (b.dataset.close === "editor") closeEditor(true);
-      else if (b.dataset.close === "view") $("#sheet-view").hidden = true;
+      else if (b.dataset.close === "view") closeViewSheet();
       else $("#sheet-tags").hidden = true;
     });
   }
@@ -1736,7 +2082,7 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       // Leaving the app stops the video; pausing here keeps the clock honest.
-      if (TP.playing || TP.starting) pauseVideo();
+      if (videoActive()) pauseVideo();
       savePos();
       return;
     }
@@ -1745,11 +2091,12 @@
   });
 
   function init() {
-    if (CFG.debug) window.__ms = { TP, S, vodNow };   // automated tests only
+    if (CFG.debug) window.__ms = { TP, DV, S, vodNow, mode: () => mode };   // automated tests only
     const z = store.get("ms.zoom", 30);
     S.zoom = typeof z === "number" && z >= ZOOM_MIN && z <= ZOOM_MAX ? z : 30;
     const q = store.get("ms.quality", 480);
     S.quality = QUALITIES.includes(q) ? q : 480;
+    playerPref = store.get("ms.player", "direct") === "twitch" ? "twitch" : "direct";
     renderSync();
     if (!APP_KEY) return show("#screen-setup");
     if (!auth.signedIn()) return showConnect();

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://player.twitch.tv; frame-src https://player.twitch.tv https://embed.twitch.tv; style-src 'self'; img-src 'self' data:; connect-src https://api.dropboxapi.com https://content.dropboxapi.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://player.twitch.tv; frame-src https://player.twitch.tv https://embed.twitch.tv; style-src 'self'; img-src 'self' data:; media-src https://*.cloudfront.net https://*.twitch.tv https://*.ttvnw.net; connect-src https://api.dropboxapi.com https://content.dropboxapi.com; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="theme-color" content="#0d1117">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=202610011815">
+<link rel="stylesheet" href="style.css?v=202610011934">
 <title>Marker Sync</title>
 </head>
 <body>
@@ -159,30 +159,38 @@
   </div>
 </div>
 
-<!-- Waveform track + video quality -->
+<!-- Waveform track, video player + quality, player check -->
 <div id="sheet-view" class="sheet" hidden>
   <div class="sheet-backdrop" data-close="view"></div>
   <div class="sheet-panel">
     <div class="sheet-head">
-      <span class="sheet-title">Waveform</span>
+      <span class="sheet-title">Waveform and video</span>
       <button id="view-done" class="btn btn-primary" type="button">Done</button>
     </div>
     <p class="muted small">Which audio track the waveform shows. The video's sound doesn't change.</p>
     <ul id="track-list" class="pick-list"></ul>
+    <div class="tag-head"><span class="muted small">Video player</span></div>
+    <div class="seg seg-wide" role="group" aria-label="Video player">
+      <button type="button" data-player="direct">Direct</button>
+      <button type="button" data-player="twitch">Twitch</button>
+    </div>
+    <p id="player-note" class="muted small"></p>
     <div class="tag-head"><span class="muted small">Video quality</span></div>
     <div class="seg seg-wide" role="group" aria-label="Video quality">
+      <button type="button" data-quality="720">720p</button>
       <button type="button" data-quality="480">480p</button>
       <button type="button" data-quality="360">360p</button>
-      <button type="button" data-quality="0">Auto</button>
     </div>
-    <p class="muted small">480p uses about 0.7 GB per hour of watching, 360p about 0.35 GB.</p>
+    <p class="muted small">Per hour of watching: 720p about 1.6 GB, 480p about 0.7 GB, 360p about 0.35 GB.</p>
+    <div class="tag-head"><span class="muted small">Player check</span></div>
+    <pre id="player-check" class="player-check"></pre>
   </div>
 </div>
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js?v=202610011815"></script>
+<script src="config.js?v=202610011934"></script>
 <script src="https://player.twitch.tv/js/embed/v1.js"></script>
-<script src="app.js?v=202610011815"></script>
+<script src="app.js?v=202610011934"></script>
 </body>
 </html>
