@@ -235,7 +235,27 @@ code, .mono { font-family: var(--mono); }
 }
 
 .transport { padding: 6px 12px 4px; }
-.times { display: flex; justify-content: space-between; align-items: baseline; padding: 0 2px 4px; }
+.times { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 0 2px 4px; }
+.vol { flex: 1; max-width: 200px; display: flex; align-items: center; gap: 2px; }
+.vol-btn {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--t2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.vol-btn:active { background: var(--surface-hi); }
+.vol-btn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.vol-btn svg path:first-child { fill: currentColor; }
+.vol-btn.on { color: var(--red); }
+.vol input { flex: 1; min-width: 0; height: 30px; margin: 0; accent-color: var(--accent); }
+.vol.mute-only input { display: none; }
 .t-now { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .transport-row { display: grid; grid-template-columns: 0.8fr 1fr 1.4fr 1fr 0.8fr; gap: 8px; }
 .btn-talk { color: var(--accent); }
@@ -397,6 +417,7 @@ code, .mono { font-family: var(--mono); }
 .mrow { --mc: var(--marker); display: flex; align-items: stretch; border-bottom: 1px solid var(--border);
   box-shadow: inset 4px 0 0 var(--mc); }
 .mrow.near { background: var(--marker-lo); }
+.mrow.held { background: color-mix(in srgb, var(--mc) 24%, transparent); }
 .mrow-main {
   flex: 1;
   min-width: 0;

@@ -1115,6 +1115,7 @@
     $("#player").append(v);
     videoMsg("Tap Play to start the VOD");
     directSource(at);
+    applyVolume();
   }
 
   function directSource(at) {
@@ -1260,6 +1261,7 @@
     if (TP.ready || !TP.player) return;
     TP.ready = true;
     videoMsg(null);
+    applyVolume();
     if (TP.want != null) sendSeek(TP.want);
   }
 
@@ -2169,6 +2171,70 @@
     setRate(rate === 1 ? altRate : 1);
   });
 
+  /* ---------- volume ----------
+     The slider sets how loud the video plays (a square curve, so the middle
+     sounds about half as loud) and the speaker mutes. The level is
+     remembered, mute isn't. An iPhone won't let a web page set a video's
+     volume, only its side buttons can, so there it's the speaker alone. (Web
+     Audio could do it, but only on a stream the page may read, and Twitch's
+     video servers allow that for twitch.tv only. Checked 2026-10-03.) */
+  const VOL = { v: 1, muted: false };
+  const SPEAKER = {
+    on: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/>',
+    low: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/>',
+    off: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9l5 6"/><path d="M22 9l-5 6"/>',
+  };
+
+  let nativeVol = null;
+  function canSetVolume() {
+    if (nativeVol == null) {
+      try {
+        const a = document.createElement("audio");
+        a.volume = 0.5;
+        nativeVol = Math.abs(a.volume - 0.5) < 0.01;      // an iPhone keeps it at 1
+      } catch {
+        nativeVol = false;
+      }
+      if (CFG.debug && store.get("ms.likeIphone", false)) nativeVol = false;    // automated tests
+    }
+    return nativeVol;
+  }
+
+  function renderVolume() {
+    const slider = canSetVolume();
+    const level = slider ? VOL.v : 1;
+    $(".vol").classList.toggle("mute-only", !slider);
+    $("#mute svg").innerHTML = SPEAKER[VOL.muted || level === 0 ? "off" : level < 0.5 ? "low" : "on"];
+    $("#mute").setAttribute("aria-label", VOL.muted ? "Unmute" : "Mute");
+    $("#mute").classList.toggle("on", VOL.muted);
+    $("#volume").value = String(Math.round(VOL.v * 100));
+  }
+
+  function applyVolume() {
+    renderVolume();
+    const gain = canSetVolume() ? VOL.v * VOL.v : 1;
+    if (mode === "twitch") {
+      try {
+        TP.player.setVolume(gain);
+        TP.player.setMuted(VOL.muted);
+      } catch { /* not loaded yet; sent again when it's ready */ }
+    } else if (DV.el) {
+      DV.el.muted = VOL.muted;
+      if (canSetVolume()) DV.el.volume = gain;
+    }
+  }
+
+  $("#volume").addEventListener("input", (e) => {
+    VOL.v = Number(e.target.value) / 100;
+    VOL.muted = false;
+    store.set("ms.volume", VOL.v);
+    applyVolume();
+  });
+  $("#mute").addEventListener("click", () => {
+    VOL.muted = !VOL.muted;
+    applyVolume();
+  });
+
   /* ---------- waveform ---------- */
 
   let overviewBars = null;
@@ -2500,7 +2566,41 @@
     if (resume) pauseVideo();
     S.moving = { m, from: mClip(m), at: mClip(m), resume };
     if (navigator.vibrate) navigator.vibrate(12);
+    holdRow(m.id);
     requestDraw();
+  }
+
+  /* The marker being held is lit up in the list and scrolled into view, and
+     after a move the list follows it to its new place for a moment. */
+  let heldId = null;
+  let heldTimer = 0;
+
+  function holdRow(id) {
+    clearTimeout(heldTimer);
+    heldId = id;
+    for (const li of $$("#markers .mrow")) li.classList.toggle("held", li.dataset.id === id);
+    revealRow(id);
+  }
+
+  function letGoRow(id, moved) {
+    if (moved) holdRow(id);
+    clearTimeout(heldTimer);
+    heldTimer = setTimeout(() => {
+      heldId = null;
+      for (const li of $$("#markers .mrow.held")) li.classList.remove("held");
+    }, moved ? 1500 : 0);
+  }
+
+  // Scrolls the marker list only (never the screen) so the row is in view,
+  // centered when it has to move.
+  function revealRow(id) {
+    const box = $(".markers-wrap");
+    const row = box.querySelector(`.mrow[data-id="${CSS.escape(id)}"]`);
+    if (!row) return;
+    const b = box.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    if (r.top >= b.top && r.bottom <= b.bottom) return;
+    box.scrollTo({ top: box.scrollTop + (r.top - b.top) - (b.height - r.height) / 2, behavior: "smooth" });
   }
 
   function moveTo(c) {
@@ -2523,7 +2623,8 @@
     const mv = S.moving;
     S.moving = null;
     if (!mv) return;
-    if (!cancel && Math.abs(mv.at - mv.from) >= 0.05) {
+    const moved = !cancel && Math.abs(mv.at - mv.from) >= 0.05;
+    if (moved) {
       const m = mv.m;
       const before = { had: typeof m.vod_time === "number", vod_time: m.vod_time, vod_id: m.vod_id,
         timestamp: m.timestamp, clock: m.clock };
@@ -2546,6 +2647,7 @@
         },
       });
     }
+    letGoRow(mv.m.id, moved);
     requestDraw();
     if (mv.resume) playVideo();
   }
@@ -2833,7 +2935,7 @@
     }
     if (!shown.length) ul.append(el("li", "empty", "No markers with those tags."));
     for (const m of shown) {
-      const li = el("li", m.id === nearId ? "mrow near" : "mrow");
+      const li = el("li", "mrow" + (m.id === nearId ? " near" : "") + (m.id === heldId ? " held" : ""));
       li.dataset.id = m.id;
       li.style.setProperty("--mc", colorHex(m.color));
       const mt = mClip(m);
@@ -3050,7 +3152,7 @@
 
   function init() {
     if (CFG.debug) {   // automated tests only
-      window.__ms = { TP, DV, S, VZ, talk, vodNow, now, mode: () => mode, rate: () => rate, tags: () => tags, syncOpenClip, jumpTalk };
+      window.__ms = { TP, DV, S, VZ, VOL, talk, vodNow, now, mode: () => mode, rate: () => rate, tags: () => tags, syncOpenClip, jumpTalk };
     }
     const z = store.get("ms.zoom", 30);
     S.zoom = typeof z === "number" && z >= ZOOM_MIN && z <= ZOOM_MAX ? z : 30;
@@ -3059,6 +3161,9 @@
     playerPref = store.get("ms.player", "direct") === "twitch" ? "twitch" : "direct";
     const sp = store.get("ms.speed", 2);
     altRate = RATES.includes(sp) ? sp : 2;
+    const vol = store.get("ms.volume", 1);
+    VOL.v = typeof vol === "number" && vol >= 0 && vol <= 1 ? vol : 1;
+    renderVolume();
     renderSync();
     if (!APP_KEY) return show("#screen-setup");
     if (!auth.signedIn()) return showConnect();
