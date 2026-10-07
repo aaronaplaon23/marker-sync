@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=202610030405">
+<link rel="stylesheet" href="style.css?v=202610071141">
 <title>Marker Sync</title>
 </head>
 <body>
@@ -114,11 +114,24 @@
   </div>
   <div class="markers-wrap">
     <div class="markers-head">
-      <span>Markers <span id="marker-count" class="marker-count"></span></span>
+      <div class="view-tabs" role="tablist" aria-label="Markers or script">
+        <button id="tab-markers" class="btn-filter view-tab on" type="button" role="tab" aria-selected="true">Markers <span id="marker-count" class="marker-count"></span></button>
+        <button id="tab-script" class="btn-filter view-tab" type="button" role="tab" aria-selected="false">Script</button>
+      </div>
       <button id="filter" class="btn-filter" type="button" aria-expanded="false" aria-controls="filter-chips">Filter</button>
     </div>
     <div id="filter-chips" class="chips filter-chips" hidden></div>
     <ul id="markers" class="marker-list"></ul>
+    <div id="script-view" class="script-view" hidden>
+      <div class="script-tools">
+        <button id="sc-insert" class="btn btn-small" type="button">+ Nearest marker</button>
+        <button id="sc-outline" class="btn btn-small" type="button">Outline</button>
+        <button id="sc-goto" class="btn btn-small" type="button" disabled>Go to</button>
+      </div>
+      <textarea id="script-text" class="script-text" autocapitalize="sentences"
+                placeholder="Write the script here. + Nearest marker drops in the marker by the playhead; Outline drops in all of them."></textarea>
+      <p id="script-status" class="muted small script-status"></p>
+    </div>
   </div>
 </section>
 
@@ -144,6 +157,10 @@
       </div>
       <p id="ed-newtag-error" class="error-text" hidden></p>
     </div>
+    <div class="tag-head">
+      <span class="muted small">Clip</span>
+    </div>
+    <div id="ed-clip" class="ed-clip"></div>
     <div class="tag-head">
       <span class="muted small">Color</span>
     </div>
@@ -218,8 +235,8 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js?v=202610030405"></script>
+<script src="config.js?v=202610071141"></script>
 <script src="https://player.twitch.tv/js/embed/v1.js"></script>
-<script src="app.js?v=202610030405"></script>
+<script src="app.js?v=202610071141"></script>
 </body>
 </html>

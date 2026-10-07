@@ -1102,7 +1102,7 @@
     v.addEventListener("loadedmetadata", applyRate);
     v.addEventListener("loadeddata", () => videoMsg(null));
     v.addEventListener("play", () => { showPlaying(true); requestDraw(); });
-    v.addEventListener("playing", () => { videoMsg(null); showPlaying(true); requestDraw(); });
+    v.addEventListener("playing", () => { videoMsg(null); showPlaying(true); requestDraw(); checkFast(); });
     v.addEventListener("pause", () => { showPlaying(false); requestDraw(); });
     v.addEventListener("seeked", requestDraw);
     v.addEventListener("error", () => directFailed());
@@ -1680,6 +1680,7 @@
     S.markersError = null;
     S.dragClip = null;
     S.moving = null;
+    S.span = null;
     S.duration = c.duration || 0;
     overviewBars = null;
     nearId = null;
@@ -1706,6 +1707,7 @@
     if (token !== S.openToken) return;
     renderMarkers();
     requestDraw();
+    if (SCR.view === "script") loadScript();
     clearInterval(syncTimer);
     syncTimer = setInterval(syncOpenClip, CFG.syncMs || 10000);
   }
@@ -1751,6 +1753,7 @@
       } else {
         S.markers = keep;          // same markers: keep the objects the screen points at
       }
+      if (SCR.view === "script" && !SCR.dirty && document.activeElement !== scriptBox) await loadScript();
     } catch (e) {
       if (token === S.openToken) S.markers = keep;
       if (e instanceof AuthError) needSignIn();
@@ -1760,6 +1763,7 @@
   }
 
   function closeClip() {
+    saveScript();
     clearInterval(syncTimer);
     savePos();
     S.openToken++;
@@ -2073,12 +2077,13 @@
   for (const b of $$("[data-zoom-step]")) b.addEventListener("click", () => zoomStep(Number(b.dataset.zoomStep)));
 
   /* ---------- speed ---------- */
-  // Tap toggles between 1x and the chosen speed (2x to start). Press and hold
-  // for 1.25 to 2x, slide to one and let go: it plays at that speed and
-  // becomes the one the tap toggles to. Direct player only: Twitch's player
-  // can't be sped up from outside.
+  // Tap steps 1x -> the chosen speed (2x to start) -> 4x -> 1x. Press and
+  // hold for 1.25 to 2x, slide to one and let go: it plays at that speed and
+  // becomes the tap's middle stop. Direct player only: Twitch's player can't
+  // be sped up from outside.
 
   const RATES = [2, 1.75, 1.5, 1.25];
+  const FAST = 4;
   let rate = 1;
   let altRate = 2;
   const speedBtn = $("#speed");
@@ -2106,6 +2111,35 @@
     speedBtn.classList.toggle("on", on && rate !== 1);
     speedBtn.classList.toggle("off", !on);
     speedBtn.setAttribute("aria-label", on ? `Playback speed ${rate}x. Hold for other speeds.` : "Playback speed (Direct player only)");
+  }
+
+  // Some phones only go to 2x on a stream. If the video doesn't keep up with
+  // 4x over 2 s of smooth playing (or won't take it at all), it drops to 2x.
+  let fastTimer = 0;
+  function checkFast() {
+    clearTimeout(fastTimer);
+    const v = DV.el;
+    if (rate !== FAST || mode !== "direct" || !v) return;
+    if (Math.abs(v.playbackRate - FAST) > 0.01) {
+      fastFailed();
+      return;
+    }
+    if (v.paused) return;                      // checked again on "playing"
+    const t0 = v.currentTime;
+    const at0 = performance.now();
+    let rough = false;
+    const onRough = () => { rough = true; };
+    for (const n of ["waiting", "seeking"]) v.addEventListener(n, onRough, { once: true });
+    fastTimer = setTimeout(() => {
+      for (const n of ["waiting", "seeking"]) v.removeEventListener(n, onRough);
+      if (rate !== FAST || DV.el !== v || v.paused || rough) return;
+      if ((v.currentTime - t0) / ((performance.now() - at0) / 1000) < 2.6) fastFailed();
+    }, 2000);
+  }
+
+  function fastFailed() {
+    setRate(2);
+    toast("This phone plays the stream at up to 2x.");
   }
 
   function openSpeedMenu() {
@@ -2168,7 +2202,8 @@
       toast("Speed works with the Direct player (the gear button, Video player).");
       return;
     }
-    setRate(rate === 1 ? altRate : 1);
+    setRate(rate === 1 ? altRate : rate < FAST ? FAST : 1);
+    checkFast();
   });
 
   /* ---------- volume ----------
@@ -2345,6 +2380,13 @@
     c.fillRect(x0, 0, Math.max(3, x1 - x0), H);
     const unit = Math.max(1, Math.round(W / 390));
     for (const m of S.markers) {
+      const r = mRegion(m);
+      if (!r) continue;
+      c.globalAlpha = passesFilter(m) ? 0.35 : 0.1;
+      c.fillStyle = colorHex(m.color);
+      c.fillRect((r[0] / dur) * W, H * 0.2, Math.max(unit, ((r[1] - r[0]) / dur) * W), H * 0.6);
+    }
+    for (const m of S.markers) {
       if (S.moving && S.moving.m === m) continue;
       c.globalAlpha = passesFilter(m) ? 1 : 0.25;
       c.fillStyle = colorHex(m.color);
@@ -2457,6 +2499,22 @@
       c.closePath();
       c.fill();
     };
+    // Clips: a tinted band from where each marker's clip starts to where it ends.
+    for (const m of S.markers) {
+      const r = mRegion(m);
+      if (!r || r[1] < t0 || r[0] > t0 + span) continue;
+      const a = Math.max(0, (r[0] - t0) * pps);
+      const b = Math.min(W, (r[1] - t0) * pps);
+      const dim = passesFilter(m) ? 1 : 0.35;
+      c.fillStyle = colorHex(m.color);
+      c.globalAlpha = 0.2 * dim;
+      c.fillRect(a, top, Math.max(2 * dpr, b - a), H - top);
+      c.globalAlpha = 0.9 * dim;
+      c.fillRect(a, top, Math.max(2 * dpr, b - a), 2 * dpr);
+      if (r[0] >= t0) c.fillRect(a, top, 2 * dpr, H - top);
+      if (r[1] <= t0 + span) c.fillRect(b - 2 * dpr, top, 2 * dpr, H - top);
+    }
+    c.globalAlpha = 1;
     for (const m of S.markers) {
       if (S.moving && S.moving.m === m) continue;
       const mt = mClip(m);
@@ -2465,6 +2523,19 @@
       flag(Math.round((mt - t0) * pps), colorHex(m.color));
     }
     c.globalAlpha = 1;
+    // A clip being set: its length over the marker.
+    if (S.span) {
+      const r = mRegion(S.span.m);
+      const x = Math.round((mClip(S.span.m) - t0) * pps);
+      const label = r ? fmtLen(r[1] - r[0]) : "0s";
+      c.font = `700 ${Math.round(12 * dpr)}px ui-monospace, Menlo, monospace`;
+      const tw = c.measureText(label).width + 10 * dpr;
+      const lx = clamp(x - tw / 2, 0, W - tw);
+      c.fillStyle = colorHex(S.span.m.color);
+      c.fillRect(lx, 0, tw, top - 2 * dpr);
+      c.fillStyle = "#0d1117";
+      c.fillText(label, lx + 5 * dpr, 2 * dpr);
+    }
 
     const px = Math.round(W / 2);
     c.fillStyle = "#ffffff";
@@ -2732,7 +2803,8 @@
       // A second finger turns it into a pinch; the first finger's drag or move is dropped.
       if (dd) {
         clearTimeout(dd.hold);
-        if (dd.moving) drop(true);
+        if (dd.region) endSpan(true);
+        else if (dd.moving) drop(true);
         else if (dd.moved) {
           S.dragClip = null;
           requestDraw();
@@ -2745,6 +2817,16 @@
     if (touches.size !== 1) return;
     const press = { id: e.pointerId, x: e.clientX, t: now(), moved: false, moving: false, hold: 0 };
     const m = markerAt(dt, e.clientX, 16);
+    // The second tap of a double tap on a flag, held down: dragging sets its clip.
+    if (m && flagTap && flagTap.m === m && performance.now() - flagTap.at < DOUBLE_MS) {
+      clearTimeout(flagTap.timer);
+      flagTap = null;
+      press.region = true;
+      dd = press;
+      startSpan(m);
+      return;
+    }
+    press.flag = m;
     if (m) {
       press.hold = setTimeout(() => {
         if (dd !== press || press.moved) return;
@@ -2763,6 +2845,10 @@
       return;
     }
     if (!dd || e.pointerId !== dd.id) return;
+    if (dd.region) {
+      spanTo(ddTime(e));
+      return;
+    }
     if (dd.moving) {
       moveTo(ddTime(e));
       return;
@@ -2785,10 +2871,21 @@
     }
     if (!dd || e.pointerId !== dd.id) return;
     clearTimeout(dd.hold);
-    if (dd.moving) {
+    if (dd.region) {
+      endSpan(cancelled);
+    } else if (dd.moving) {
       drop(cancelled);
     } else if (dd.moved) {
       scrubEnd(S.dragClip);
+    } else if (!cancelled && dd.flag) {
+      // A tap on a flag waits a moment: a second tap makes it a double tap.
+      const c = ddTime(e);
+      const tap = { m: dd.flag, at: performance.now() };
+      tap.timer = setTimeout(() => {
+        if (flagTap === tap) flagTap = null;
+        seekClip(c);
+      }, DOUBLE_MS);
+      flagTap = tap;
     } else if (!cancelled) {
       seekClip(ddTime(e));
     }
@@ -2797,6 +2894,86 @@
   dt.addEventListener("pointerup", (e) => ddEnd(e, false));
   dt.addEventListener("pointercancel", (e) => ddEnd(e, true));
   for (const cv of [ov, dt]) cv.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  /* ---------- clips (regions) ----------
+     LosslessCut-style: a marker can carry a clip, from a little before it to
+     a little after. Double-tap its flag on the zoomed waveform and, on the
+     second tap, keep the finger down and drag: left of the marker sets where
+     the clip starts, right of it where it ends. Saved as pre / post (seconds
+     before and after the marker), so it moves with the marker. The clip
+     editor's Markers tab exports them; in Premiere they're range markers. */
+  const DOUBLE_MS = 300;
+  let flagTap = null;                 // {m, at, timer}: a tap on a flag, waiting for a second
+
+  const spanOf = (v) => (typeof v === "number" && v > 0 && v < 1e7 ? v : 0);
+  const fmtLen = (sec) => (sec < 60 ? `${sec.toFixed(1)}s` : fmtTime(sec));
+
+  function mRegion(m) {
+    const live = S.span && S.span.m === m ? S.span : m;
+    const pre = spanOf(live.pre);
+    const post = spanOf(live.post);
+    if (!(pre || post)) return null;
+    const t = S.moving && S.moving.m === m ? S.moving.at : mClip(m);
+    return [Math.max(0, t - pre), Math.min(S.duration || Infinity, t + post)];
+  }
+
+  function startSpan(m) {
+    const resume = videoActive();
+    if (resume) pauseVideo();
+    S.span = { m, pre: spanOf(m.pre), post: spanOf(m.post), resume, moved: false };
+    if (navigator.vibrate) navigator.vibrate(12);
+    holdRow(m.id);
+    requestDraw();
+  }
+
+  function spanTo(c) {
+    const sp = S.span;
+    if (!sp) return;
+    const t = mClip(sp.m);
+    c = clamp(c, 0, S.duration);
+    if (c < t) sp.pre = t - c;
+    else sp.post = c - t;
+    sp.moved = true;
+    requestDraw();
+  }
+
+  function setSpan(m, pre, post) {
+    pre = Math.round(spanOf(pre) * 1000) / 1000;
+    post = Math.round(spanOf(post) * 1000) / 1000;
+    if (pre) m.pre = pre;
+    else delete m.pre;
+    if (post) m.post = post;
+    else delete m.post;
+  }
+
+  function endSpan(cancel) {
+    const sp = S.span;
+    S.span = null;
+    if (!sp) return;
+    const m = sp.m;
+    const before = { pre: spanOf(m.pre), post: spanOf(m.post) };
+    const changed = Math.abs(sp.pre - before.pre) > 0.01 || Math.abs(sp.post - before.post) > 0.01;
+    if (!cancel && sp.moved && changed) {
+      setSpan(m, sp.pre, sp.post);
+      persistMarker(m);
+      renderMarkers();
+      const r = mRegion(m);
+      toast(r ? `Clip ${fmtTime(r[0], true)} to ${fmtTime(r[1], true)} (${fmtLen(r[1] - r[0])})` : "Clip removed", {
+        label: "Undo",
+        run: () => {
+          setSpan(m, before.pre, before.post);
+          persistMarker(m);
+          if (S.clip && S.clip.id === m.clip_id) {
+            renderMarkers();
+            requestDraw();
+          }
+        },
+      });
+    }
+    letGoRow(m.id, !cancel && sp.moved && changed);
+    requestDraw();
+    if (sp.resume) playVideo();
+  }
 
   /* ---------- markers ---------- */
 
@@ -2871,8 +3048,8 @@
     btn.classList.toggle("on", markerFilter.size > 0);
     btn.setAttribute("aria-expanded", String(filterOpen));
     const box = $("#filter-chips");
-    box.hidden = !filterOpen;
-    if (!filterOpen) return;
+    box.hidden = !filterOpen || SCR.view !== "markers";
+    if (box.hidden) return;
     box.replaceChildren();
     // The tags on this clip's markers, plus any picked ones, in tag-list order.
     const seen = new Map();
@@ -2941,6 +3118,8 @@
       const mt = mClip(m);
       const main = button("mrow-main", null, () => seekMarker(m));
       main.append(el("span", "mrow-time", fmtTime(mt, true)));
+      const reg = mRegion(m);
+      if (reg) main.append(el("span", "mrow-len", fmtLen(reg[1] - reg[0])));
       main.append(el("span", m.note ? "mrow-note" : "mrow-note dim", m.note || "No note"));
       const sx = markerTags(m).filter((t) => t.suffix);
       if (sx.length) {
@@ -3001,13 +3180,14 @@
     const current = markerTags(m);
     // picked: tag ids on; extra: tags deleted from the list that this marker still has.
     ed = { m, resume, picked: new Set(current.map((t) => t.id)), extra: current.filter((t) => !tagById(t.id)),
-      color: cleanColor(m.color) };
+      color: cleanColor(m.color), clearClip: false };
     $("#ed-time").textContent = `Marker at ${fmtTime(mClip(m), true)}`;
     $("#ed-note").value = m.note || "";
     $("#ed-newtag").hidden = true;
     $("#ed-newtag-error").hidden = true;
     renderEditorTags();
     renderEditorColor();
+    renderEditorClip();
     $("#sheet-editor").hidden = false;
     // Same tap that opened it, so iOS brings the keyboard up.
     $("#ed-note").focus();
@@ -3021,11 +3201,12 @@
       const list = [...tags, ...ed.extra].filter((t) => ed.picked.has(t.id));
       const before = markerTagRefs(m).map((t) => t.id).sort().join("|");
       const after = list.map((t) => t.id).sort().join("|");
-      if (note !== (m.note || "") || before !== after || ed.color !== cleanColor(m.color)) {
+      if (note !== (m.note || "") || before !== after || ed.color !== cleanColor(m.color) || ed.clearClip) {
         m.note = note;
         setMarkerTags(m, list);
         if (ed.color) m.color = ed.color;
         else delete m.color;
+        if (ed.clearClip) setSpan(m, 0, 0);
         persistMarker(m);
       }
     }
@@ -3065,6 +3246,23 @@
       $("#ed-newtag").hidden = false;
       $("#ed-newtag-name").focus();
       await tagsReady(err);
+    }));
+  }
+
+  function renderEditorClip() {
+    const box = $("#ed-clip");
+    box.replaceChildren();
+    if (!ed) return;
+    const r = mRegion(ed.m);
+    if (!r || ed.clearClip) {
+      box.append(el("span", "muted small", ed.clearClip ? "The clip goes when you tap Done."
+        : "No clip. Double-tap the marker's flag on the waveform, keep your finger down, and drag left or right."));
+      return;
+    }
+    box.append(el("span", "mono", `${fmtTime(r[0], true)} to ${fmtTime(r[1], true)} · ${fmtLen(r[1] - r[0])}`));
+    box.append(button("btn btn-ghost btn-danger btn-small", "Remove", () => {
+      ed.clearClip = true;
+      renderEditorClip();
     }));
   }
 
@@ -3125,6 +3323,180 @@
     });
   });
 
+  /* ---------- script ----------
+     The clip's script.md, next to its markers in Dropbox: the clip editor's
+     5 · Script tab writes the same file. Saved a moment after you stop
+     typing (through the outbox, so offline is fine), and picked up from the
+     PC on the 10 s check while you're not typing in it. */
+  const SCR = { view: "markers", clipId: null, rev: null, dirty: false, timer: 0, loading: false };
+  const scriptPath = () => `${S.clip.folder}/script.md`;
+  const scriptBox = $("#script-text");
+
+  function setView(v) {
+    SCR.view = v;
+    for (const [id, on] of [["#tab-markers", v === "markers"], ["#tab-script", v === "script"]]) {
+      $(id).classList.toggle("on", on);
+      $(id).setAttribute("aria-selected", String(on));
+    }
+    $("#markers").hidden = v !== "markers";
+    $("#filter").hidden = v !== "markers";
+    $("#script-view").hidden = v !== "script";
+    $(".markers-wrap").classList.toggle("scripting", v === "script");
+    renderFilter();
+    if (v === "script") loadScript();
+  }
+
+  function scriptStatus(text) {
+    if (text != null) {
+      $("#script-status").textContent = text;
+      return;
+    }
+    const words = scriptBox.value.trim() ? scriptBox.value.trim().split(/\s+/).length : 0;
+    $("#script-status").textContent = `${words} word${words === 1 ? "" : "s"}` + (SCR.dirty ? " · editing" : "");
+  }
+
+  async function loadScript() {
+    const c = S.clip;
+    if (!c || SCR.loading) return;
+    if (SCR.clipId !== c.id) {
+      Object.assign(SCR, { clipId: c.id, rev: null, dirty: false });
+      scriptBox.value = "";
+      scriptStatus("Loading the script");
+    }
+    const path = scriptPath();
+    const pending = outbox.ops.filter((o) => o.kind === "put" && o.path.toLowerCase() === path.toLowerCase()).pop();
+    if (pending && !SCR.dirty && scriptBox.value !== pending.text && document.activeElement !== scriptBox) {
+      scriptBox.value = pending.text;
+      scriptStatus();
+      return;
+    }
+    SCR.loading = true;
+    try {
+      const meta = await dbx.meta(path);
+      if (S.clip !== c || SCR.clipId !== c.id) return;
+      if (!meta || meta.rev === SCR.rev) {
+        scriptStatus();
+        return;
+      }
+      const text = await readText(meta);
+      if (S.clip !== c) return;
+      // Not under your fingers: typing (or about to save) wins.
+      if (SCR.dirty || (document.activeElement === scriptBox && scriptBox.value !== text && SCR.rev)) return;
+      SCR.rev = meta.rev;
+      if (scriptBox.value !== text) scriptBox.value = text;
+      scriptStatus();
+      scriptCaret();
+    } catch (e) {
+      if (e instanceof AuthError) return needSignIn();
+      scriptStatus(`Couldn't load the script. ${errText(e)}`);
+    } finally {
+      SCR.loading = false;
+    }
+  }
+
+  function saveScript() {
+    clearTimeout(SCR.timer);
+    if (!SCR.dirty || !S.clip || SCR.clipId !== S.clip.id) return;
+    SCR.dirty = false;
+    outbox.put(scriptPath(), scriptBox.value);
+    scriptStatus();
+  }
+
+  scriptBox.addEventListener("input", () => {
+    SCR.dirty = true;
+    clearTimeout(SCR.timer);
+    SCR.timer = setTimeout(saveScript, 1000);
+    scriptStatus();
+    scriptCaret();
+  });
+  // Typing: the waveforms and buttons step aside (the video stays) and the
+  // screen fits above the keyboard, so the script gets the room. Back on blur.
+  function fitViewport() {
+    const vv = window.visualViewport;
+    document.documentElement.style.setProperty("--vvh", `${Math.round(vv ? vv.height : window.innerHeight)}px`);
+    if ($("#screen-clip").classList.contains("writing")) window.scrollTo(0, 0);
+  }
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", fitViewport);
+  scriptBox.addEventListener("focus", () => {
+    fitViewport();
+    $("#screen-clip").classList.add("writing");
+  });
+  scriptBox.addEventListener("blur", () => {
+    saveScript();
+    $("#screen-clip").classList.remove("writing");
+    resizeCanvases();
+    requestDraw();
+  });
+  for (const n of ["click", "keyup", "select"]) scriptBox.addEventListener(n, scriptCaret);
+
+  function scriptLine(m) {
+    const r = mRegion(m);
+    const when = r ? `${fmtTime(r[0])} to ${fmtTime(r[1])}` : fmtTime(mClip(m));
+    const sfx = markerTags(m).filter((t) => t.suffix).map((t) => t.suffix).join(" ");
+    return `[${when}] ${m.note || "(no note)"}${sfx ? ` (${sfx})` : ""}`;
+  }
+
+  // Whole lines: with the cursor partway along a line they go after that
+  // line, never into the middle of it.
+  function insertScript(text) {
+    const v = scriptBox.value;
+    let a = scriptBox.selectionStart ?? v.length;
+    let b = scriptBox.selectionEnd ?? a;
+    if (a === b && a > 0 && v[a - 1] !== "\n") {
+      const eol = v.indexOf("\n", a);
+      a = b = eol < 0 ? v.length : eol;
+      text = "\n" + text.replace(/\n$/, "");
+    }
+    scriptBox.setRangeText(text, a, b, "end");
+    scriptBox.dispatchEvent(new Event("input"));
+  }
+
+  $("#sc-insert").addEventListener("click", () => {
+    const t = now();
+    let best = null;
+    for (const m of S.markers) if (!best || Math.abs(mClip(m) - t) < Math.abs(mClip(best) - t)) best = m;
+    if (!best) {
+      toast("No markers on this clip yet.");
+      return;
+    }
+    insertScript(scriptLine(best) + "\n");
+  });
+  $("#sc-outline").addEventListener("click", () => {
+    const list = S.markers.filter(passesFilter);
+    if (!list.length) {
+      toast("No markers to outline.");
+      return;
+    }
+    insertScript(list.map((m) => `- ${scriptLine(m)}`).join("\n") + "\n");
+  });
+
+  // Go to: the first [time] on the line the cursor is on.
+  function caretTime() {
+    const v = scriptBox.value;
+    const pos = scriptBox.selectionStart || 0;
+    const a = v.lastIndexOf("\n", pos - 1) + 1;
+    let b = v.indexOf("\n", pos);
+    if (b < 0) b = v.length;
+    const hit = /\[(\d{1,2}(?::\d{2}){1,2}(?:\.\d+)?)/.exec(v.slice(a, b));
+    if (!hit) return null;
+    return hit[1].split(":").reduce((acc, p) => acc * 60 + Number(p), 0);
+  }
+
+  function scriptCaret() {
+    const t = caretTime();
+    $("#sc-goto").disabled = t == null;
+    $("#sc-goto").textContent = t == null ? "Go to" : `Go to ${fmtTime(t)}`;
+  }
+
+  $("#sc-goto").addEventListener("click", () => {
+    const t = caretTime();
+    if (t != null) seekClip(t);
+  });
+  // The script's buttons leave the typing where it is (focus, keyboard, layout).
+  for (const b of $$(".script-tools button")) b.addEventListener("mousedown", (e) => e.preventDefault());
+  $("#tab-markers").addEventListener("click", () => setView("markers"));
+  $("#tab-script").addEventListener("click", () => setView("script"));
+
   for (const b of $$(".sheet-backdrop")) {
     b.addEventListener("click", () => {
       if (b.dataset.close === "editor") closeEditor(true);
@@ -3149,10 +3521,11 @@
     if (current === "#screen-clips") refreshClips();
     if (current === "#screen-clip") syncOpenClip();
   });
+  window.addEventListener("pagehide", saveScript);
 
   function init() {
     if (CFG.debug) {   // automated tests only
-      window.__ms = { TP, DV, S, VZ, VOL, talk, vodNow, now, mode: () => mode, rate: () => rate, tags: () => tags, syncOpenClip, jumpTalk };
+      window.__ms = { TP, DV, S, VZ, VOL, SCR, talk, vodNow, now, mRegion, mode: () => mode, rate: () => rate, tags: () => tags, syncOpenClip, jumpTalk };
     }
     const z = store.get("ms.zoom", 30);
     S.zoom = typeof z === "number" && z >= ZOOM_MIN && z <= ZOOM_MAX ? z : 30;

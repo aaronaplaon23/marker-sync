@@ -418,6 +418,45 @@ code, .mono { font-family: var(--mono); }
   box-shadow: inset 4px 0 0 var(--mc); }
 .mrow.near { background: var(--marker-lo); }
 .mrow.held { background: color-mix(in srgb, var(--mc) 24%, transparent); }
+.mrow-len {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--mc) 55%, transparent);
+  color: var(--mc);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+.ed-clip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 15px; min-height: 36px; }
+.ed-clip .mono { font-weight: 600; margin-right: auto; }
+
+/* Markers / Script switch, and the script itself. */
+.view-tabs { display: flex; gap: 2px; }
+.view-tab { color: var(--t2); }
+.view-tab.on { background: var(--accent-lo); color: var(--accent); }
+.markers-wrap.scripting { display: flex; flex-direction: column; overflow: hidden; }
+.script-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 4px 12px 0; }
+.script-tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.script-tools .btn { padding: 0 10px; }
+.script-text {
+  flex: 1;
+  min-height: 140px;
+  width: 100%;
+  resize: none;
+  padding: 10px 12px;
+  border: 1px solid var(--border-hi);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--t1);
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-appearance: none;
+}
+.script-text:focus { outline: none; border-color: var(--accent); }
+.script-status { margin: 0; min-height: 18px; }
+.clip-screen.writing { height: var(--vvh, 100dvh); }
+.clip-screen.writing .clip-top > :not(.video-wrap) { display: none; }
+.clip-screen.writing .markers-head { display: none; }
 .mrow-main {
   flex: 1;
   min-width: 0;
