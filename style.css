@@ -138,6 +138,43 @@ code, .mono { font-family: var(--mono); }
 }
 .banner button { margin-top: 8px; }
 
+/* --- Home: one card per tool ------------------------------------------- */
+
+.home { display: grid; gap: 12px; padding: 16px; }
+.home-sub { margin: 4px 2px 2px; font-size: 15px; }
+.tool-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 96px;
+  padding: 16px;
+  border: 1px solid var(--border-hi);
+  border-radius: 16px;
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+.tool-card:active { background: var(--surface-hi); }
+.tool-icon {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-lo);
+  color: var(--accent);
+}
+#home-markers .tool-icon { background: var(--marker-lo); color: var(--marker); }
+.tool-icon svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; }
+.tool-text { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.tool-name { font-size: 20px; font-weight: 700; }
+.tool-desc { font-size: 14px; color: var(--t2); }
+.tool-go { flex: none; font-size: 30px; line-height: 1; color: var(--t3); }
+
 /* --- Clip list --------------------------------------------------------- */
 
 .clip-list { list-style: none; margin: 0; padding: 12px 16px; display: grid; gap: 10px; }
@@ -431,12 +468,18 @@ code, .mono { font-family: var(--mono); }
 .ed-clip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 15px; min-height: 36px; }
 .ed-clip .mono { font-weight: 600; margin-right: auto; }
 
-/* Markers / Script switch, and the script itself. */
-.view-tabs { display: flex; gap: 2px; }
-.view-tab { color: var(--t2); }
-.view-tab.on { background: var(--accent-lo); color: var(--accent); }
-.markers-wrap.scripting { display: flex; flex-direction: column; overflow: hidden; }
-.script-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 4px 12px 0; }
+/* Script workspace: the video, a Script / Markers switch, and the script. */
+.script-top { flex: none; }
+.sv-transport { display: grid; grid-template-columns: 1.3fr 1fr 1.3fr 1fr; align-items: center; gap: 8px; padding: 8px 12px 0; }
+.sv-transport .t-now { font-size: 17px; }
+.sv-novideo { margin: 0; padding: 10px 16px 0; }
+.sv-switch { display: flex; width: auto; margin: 10px 12px 8px; }
+.sv-switch button { min-height: 40px; font-size: 15px; }
+.sv-switch .marker-count { margin-left: 4px; }
+.sv-hint { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; text-transform: none; }
+.sv-add { font-size: 24px; font-weight: 500; }
+.script-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px;
+  padding: 0 12px calc(8px + var(--safe-bottom)); }
 .script-tools { display: flex; gap: 6px; flex-wrap: wrap; }
 .script-tools .btn { padding: 0 10px; }
 .script-text {
@@ -454,9 +497,11 @@ code, .mono { font-family: var(--mono); }
 }
 .script-text:focus { outline: none; border-color: var(--accent); }
 .script-status { margin: 0; min-height: 18px; }
-.clip-screen.writing { height: var(--vvh, 100dvh); }
-.clip-screen.writing .clip-top > :not(.video-wrap) { display: none; }
-.clip-screen.writing .markers-head { display: none; }
+.script-screen.writing { height: var(--vvh, 100dvh); }
+.script-screen.writing .sv-transport,
+.script-screen.writing .sv-switch,
+.script-screen.writing .sv-novideo { display: none; }
+.script-screen.writing .script-view { padding-top: 8px; padding-bottom: 6px; }
 .mrow-main {
   flex: 1;
   min-width: 0;
@@ -613,3 +658,4 @@ code, .mono { font-family: var(--mono); }
 .btn-filter:active { background: var(--accent-lo); }
 .btn-filter.on { background: var(--marker-lo); color: var(--marker); }
 .mrow-tags { flex: none; max-width: 48%; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.state-none { color: var(--t2); }

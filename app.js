@@ -349,17 +349,18 @@
       cls = "saving";
       text = "Saving";
     }
-    for (const id of ["#clip-sync", "#clips-sync"]) {
+    for (const id of ["#clip-sync", "#clips-sync", "#script-sync", "#home-sync"]) {
       const s = $(id);
       s.className = cls ? `sync ${cls}` : "sync";
       s.textContent = text;
     }
     $("#clips-sync").hidden = !n;
+    $("#home-sync").hidden = !n;
   }
 
   /* ---------- screens, toast ---------- */
 
-  const SCREENS = ["#screen-setup", "#screen-connect", "#screen-clips", "#screen-clip"];
+  const SCREENS = ["#screen-setup", "#screen-connect", "#screen-home", "#screen-clips", "#screen-clip", "#screen-script"];
   let current = null;
   function show(id) {
     for (const s of SCREENS) $(s).hidden = s !== id;
@@ -418,7 +419,7 @@
       $("#connect-code").value = "";
       await ensureTags().catch(() => {});
       outbox.flush();
-      showClips();
+      showHome();
     } catch (e) {
       err.hidden = false;
       err.textContent = e instanceof NetError
@@ -461,6 +462,20 @@
       e.stopPropagation();
     }, true);
     node.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
+
+  // A sheet opened as a finger lifts: the tap's own click comes a moment later
+  // and would land on whatever the sheet put under the finger (a tag, a color).
+  function swallowClick(ms = 600) {
+    const until = performance.now() + ms;
+    const eat = (e) => {
+      document.removeEventListener("click", eat, true);
+      if (performance.now() > until) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    document.addEventListener("click", eat, true);
+    setTimeout(() => document.removeEventListener("click", eat, true), ms);
   }
 
   /* ---------- tags ---------- */
@@ -740,16 +755,42 @@
     renderTagList();
   });
 
+  /* ---------- home ----------
+     The app opens on a menu of what it can do, like the clip editor's tabs on
+     the PC: Markers (mark a clip while its VOD plays) and Script (write a
+     clip's script from its markers). Both pick a clip from the same list. */
+
+  function showHome() {
+    show("#screen-home");
+    renderSync();
+  }
+
+  $("#home-markers").addEventListener("click", () => showClips("markers"));
+  $("#home-script").addEventListener("click", () => showClips("script"));
+  $("#clips-home").addEventListener("click", showHome);
+
   /* ---------- clip list ---------- */
+  // Markers lists the clips sent to the phone. Script lists those plus clips
+  // marked only on the PC: their markers and script are in Dropbox, their
+  // video isn't.
 
   let clips = [];
+  let clipsLoaded = false;
   let clipsTimer = 0;
+  let listFor = "markers";             // which tool the list is picking a clip for
 
-  function showClips() {
+  function showClips(tool) {
+    if (tool) listFor = tool;
     show("#screen-clips");
+    $("#clips-title").textContent = listFor === "script" ? "Script" : "Markers";
+    $("#clips-tags").hidden = listFor !== "markers";
     renderSync();
+    renderClips();
     refreshClips();
   }
+
+  const hasVideo = (c) => !!(c.manifest && !c.manifest.pc_only && c.manifest.twitch && c.manifest.twitch.vod_id);
+  const fmtWhen = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
   async function refreshClips() {
     clearTimeout(clipsTimer);
@@ -758,6 +799,7 @@
       const banner = $("#clips-banner");
       try {
         clips = await loadClips();
+        clipsLoaded = true;
         banner.hidden = true;
         if (current === "#screen-clips") renderClips();
       } catch (e) {
@@ -803,7 +845,7 @@
     });
     for (const c of list) describeClip(c);
     return list
-      .filter((c) => c.state !== "empty" && c.state !== "pc")
+      .filter((c) => c.state !== "empty")
       .sort((a, b) => String(b.created || "").localeCompare(String(a.created || "")));
   }
 
@@ -812,6 +854,9 @@
     const s = c.status;
     if (m && m.pc_only) {
       c.state = "pc";             // marked in the clip editor, not sent to the phone
+      c.name = stripExt(m.source_name) || c.id;
+      c.duration = m.duration;
+      c.created = m.created;
     } else if (m) {
       const wf = c.files["waveform.bin"];
       const twitch = m.twitch && Array.isArray(m.twitch.sync) && m.twitch.sync.length;
@@ -859,21 +904,33 @@
   function renderClips() {
     const ul = $("#clips-list");
     ul.replaceChildren();
-    $("#clips-empty").hidden = clips.length > 0;
-    for (const c of clips) {
+    const script = listFor === "script";
+    const shown = clips.filter((c) => script || c.state !== "pc");
+    $("#clips-empty").hidden = !clipsLoaded || shown.length > 0;
+    $("#clips-empty-text").replaceChildren(...(script
+      ? ["Mark a clip here or in the clip editor's ", el("b", null, "Markers"), " tab on the PC, and it shows up here."]
+      : ["On the PC, open the clip editor's ", el("b", null, "Phone"), " tab and add a clip. It shows up here a minute or two later."]));
+    for (const c of shown) {
       const st = CLIP_STATES[c.state] || CLIP_STATES.missing;
       const card = button("clip-card", null, () => {
-        if (c.state === "ready") openClip(c);
+        if (script) openScript(c);
+        else if (c.state === "ready") openClip(c);
         else toast(st.hint);
       });
       card.append(el("span", "clip-name", c.name));
       const meta = el("span", "clip-meta");
-      meta.append(el("span", `state ${st.cls}`, st.text(c)));
+      if (script) {
+        const f = c.files["script.md"];
+        meta.append(el("span", `state ${f ? "state-ready" : "state-none"}`, f ? `Script, edited ${fmtWhen(f.server_modified)}` : "No script yet"));
+      } else {
+        meta.append(el("span", `state ${st.cls}`, st.text(c)));
+      }
       if (c.duration) meta.append(el("span", null, fmtTime(c.duration)));
       if (c.markerCount) meta.append(el("span", null, `${c.markerCount} marker${c.markerCount === 1 ? "" : "s"}`));
+      if (script && !hasVideo(c)) meta.append(el("span", null, c.state === "pc" ? "marked on the PC, no video here" : "no video yet"));
       card.append(meta);
-      if (c.state === "failed" && c.error) card.append(el("span", "clip-error", c.error));
-      if (c.state !== "ready") card.classList.add("clip-card-wait");
+      if (!script && c.state === "failed" && c.error) card.append(el("span", "clip-error", c.error));
+      if (!script && c.state !== "ready") card.classList.add("clip-card-wait");
       const li = el("li");
       li.append(card);
       ul.append(li);
@@ -892,6 +949,8 @@
     cache.map = {};
     tags = [];
     tagsLoaded = false;
+    clips = [];
+    clipsLoaded = false;
     showConnect();
   });
 
@@ -1004,6 +1063,7 @@
 
   function destroyPlayer() {
     clearTimeout(TP.hintTimer);
+    stopFastWatch();
     if (DV.el) {
       try {
         DV.el.pause();
@@ -1031,6 +1091,7 @@
 
   function pauseVideo() {
     if (mode === "direct") {
+      FW.pausedAt = performance.now();
       if (DV.el) DV.el.pause();
     } else if (mode === "twitch") {
       twitchPause();
@@ -1073,8 +1134,10 @@
   }
 
   function showPlaying(on) {
-    playBtn.textContent = on ? "Pause" : "Play";
-    playBtn.setAttribute("aria-label", on ? "Pause" : "Play");
+    for (const b of [playBtn, $("#sv-play")]) {
+      b.textContent = on ? "Pause" : "Play";
+      b.setAttribute("aria-label", on ? "Pause" : "Play");
+    }
   }
 
   /* Direct: a plain <video> whose currentTime is the VOD time, exact at any
@@ -1102,9 +1165,29 @@
     v.addEventListener("loadedmetadata", applyRate);
     v.addEventListener("loadeddata", () => videoMsg(null));
     v.addEventListener("play", () => { showPlaying(true); requestDraw(); });
-    v.addEventListener("playing", () => { videoMsg(null); showPlaying(true); requestDraw(); checkFast(); });
-    v.addEventListener("pause", () => { showPlaying(false); requestDraw(); });
-    v.addEventListener("seeked", requestDraw);
+    v.addEventListener("playing", () => {
+      videoMsg(null);
+      showPlaying(true);
+      requestDraw();
+      if (FW.v !== v) checkFast();          // back from a stall: the watch carries on
+    });
+    v.addEventListener("pause", () => {
+      showPlaying(false);
+      requestDraw();
+      // Stopped by itself right after starting at 4x: the phone won't play it.
+      const t = performance.now();
+      if (rate > 2 && DV.el === v && !v.ended && t - FW.pausedAt > 400 && (FW.v === v || t - FW.playAt < 3000)) {
+        fastCapped("stopped by itself", null, true);
+      } else if (FW.v === v) {
+        stopFastWatch();
+      }
+    });
+    v.addEventListener("waiting", () => { if (FW.v === v) FW.stalls++; });
+    v.addEventListener("seeking", () => { if (FW.v === v) stopFastWatch(); });
+    v.addEventListener("seeked", () => {
+      requestDraw();
+      if (!v.paused && FW.v !== v) checkFast();
+    });
     v.addEventListener("error", () => directFailed());
     v.addEventListener("click", togglePlay);
     DV.el = v;
@@ -1122,6 +1205,8 @@
     const s = pickStream();
     DV.src = s;
     DV.want = at;
+    stopFastWatch();
+    FW.pausedAt = performance.now();      // a new source stops it; that's not the phone refusing 4x
     // #t= starts it at the right spot in browsers that read it; applyWant
     // makes sure once the video has loaded.
     DV.el.src = `${s.url}#t=${Math.max(0, at).toFixed(2)}`;
@@ -1146,6 +1231,7 @@
     if (!v) return;
     applyWant();
     showPlaying(true);
+    if (rate > 2) FW.playAt = performance.now();
     let p;
     try { p = v.play(); } catch (e) { p = Promise.reject(e); }
     if (p && p.catch) {
@@ -1153,6 +1239,7 @@
         if (v !== DV.el || (e && e.name === "AbortError")) return;   // paused or replaced before it started
         showPlaying(!v.paused);
         if (e && e.name === "NotAllowedError") toast("The phone didn't let it start. Tap Play again.");
+        else if (rate > 2) fastCapped("wouldn't start", null, true);   // the stream is fine; 4x isn't
         else directFailed(e && e.name);
       });
     }
@@ -1612,6 +1699,11 @@
       ? "Direct plays the VOD in the phone's own player: exact time, nothing over the picture. Twitch is the backup."
       : blocker || "Twitch's own player, the backup. Direct is more exact.";
     for (const q of $$("[data-quality]")) q.setAttribute("aria-pressed", String(Number(q.dataset.quality) === S.quality));
+    $("#speed-note").textContent = mode !== "direct" ? "Speed works with the Direct player."
+      : topRate > 2 ? "Tap the speed button for 1x, your speed (hold it for 1.25x to 2x), then 4x."
+        : "Tops out at 2x on this phone: Safari only plays a stream faster than 2x when the stream has fast-forward "
+          + "tracks, and Twitch's VODs don't. The arrows by -10 and +10 skip the quiet parts instead.";
+    $("#speed-retry").hidden = mode !== "direct" || topRate > 2;
     renderTalkCount();
     renderPlayerCheck();
   }
@@ -1654,50 +1746,45 @@
   }
 
   function savePos() {
-    if (!S.clip) return;
+    if (!S.clip || !mode) return;
     const all = store.get("ms.vodpos", {}) || {};
     all[S.clip.id] = Math.round((S.dragClip != null ? clipToVod(S.dragClip) : vodNow()) * 10) / 10;
     store.set("ms.vodpos", all);
   }
 
-  async function openClip(c) {
+  // What the marking and script screens share: the clip's clock, its markers,
+  // the one video player (moved into the screen being opened), and the
+  // check for changes from the PC.
+  function enterClip(c, screen) {
     const token = ++S.openToken;
-    const tw = c.manifest.twitch;
+    const tw = (c.manifest && c.manifest.twitch) || {};
     S.clip = c;
-    S.vodId = tw.vod_id;
+    S.vodId = tw.vod_id || null;
     S.sync = Array.isArray(tw.sync) && tw.sync.length ? tw.sync : [{ clip: 0, vod: tw.start || 0 }];
     S.vodDuration = tw.vod_duration || 0;
     S.streams = (Array.isArray(tw.streams) ? tw.streams : [])
       .filter((s) => s && typeof s.url === "string" && /^https:\/\//.test(s.url) && s.height > 0);
     DV.failed = null;
-    S.waveCache = new Map();
-    S.waveLoads = new Map();
-    Object.assign(talk, { peaks: null, regions: [], atIndex: null, anchorAt: null, threshold: null });
     vzReset();
-    S.tracks = trackList(c.manifest);
-    S.view = [];
     S.markers = [];
     S.markersError = null;
     S.dragClip = null;
     S.moving = null;
     S.span = null;
     S.duration = c.duration || 0;
-    overviewBars = null;
     nearId = null;
-    show("#screen-clip");
-    $("#clip-title").textContent = c.name;
-    $("#t-dur").textContent = fmtTime(S.duration);
-    setZoomLabel();
+    show(screen);
+    $(screen === "#screen-clip" ? ".clip-top" : "#script-video").prepend($("#video-box"));
     renderSync();
-    renderMarkers("Loading markers");
-    resizeCanvases();
+    return token;
+  }
+
+  function startClipVideo(c) {
     const saved = (store.get("ms.vodpos", {}) || {})[c.id];
     startPlayer(typeof saved === "number" ? saved : clipToVod(0));
-    requestDraw();
-    ensureTags().catch(() => {});
-    loadTalk();
-    await showTracks(sessionView || [S.tracks[0].track]);
-    if (token !== S.openToken) return;
+  }
+
+  async function loadClipMarkers(c, token) {
     try {
       await loadMarkers(c);
     } catch (e) {
@@ -1707,9 +1794,52 @@
     if (token !== S.openToken) return;
     renderMarkers();
     requestDraw();
-    if (SCR.view === "script") loadScript();
     clearInterval(syncTimer);
     syncTimer = setInterval(syncOpenClip, CFG.syncMs || 10000);
+  }
+
+  async function openClip(c) {
+    const token = enterClip(c, "#screen-clip");
+    S.waveCache = new Map();
+    S.waveLoads = new Map();
+    Object.assign(talk, { peaks: null, regions: [], atIndex: null, anchorAt: null, threshold: null });
+    S.tracks = trackList(c.manifest);
+    S.view = [];
+    overviewBars = null;
+    $("#clip-title").textContent = c.name;
+    $("#t-dur").textContent = fmtTime(S.duration);
+    setZoomLabel();
+    renderMarkers("Loading markers");
+    resizeCanvases();
+    startClipVideo(c);
+    requestDraw();
+    ensureTags().catch(() => {});
+    loadTalk();
+    await showTracks(sessionView || [S.tracks[0].track]);
+    if (token !== S.openToken) return;
+    await loadClipMarkers(c, token);
+  }
+
+  // The script screen: the video when the clip has one on the phone, then
+  // the script, with the markers on the other side of a switch.
+  async function openScript(c) {
+    const token = enterClip(c, "#screen-script");
+    const video = hasVideo(c);
+    $("#script-title").textContent = c.name;
+    for (const id of ["#script-video", "#sv-transport", "#sc-insert", "#sc-goto"]) $(id).hidden = !video;
+    $("#sv-novideo").hidden = video;
+    $("#sv-novideo").textContent = c.state === "pc"
+      ? "Marked on the PC, so its video is there, not here. The markers and the script are both here."
+      : "This clip's video isn't on the phone yet. The markers and the script are.";
+    $("#sv-hint").textContent = video ? "Tap to watch, + puts it in the script" : "+ puts it in the script";
+    if (video) startClipVideo(c);
+    else destroyPlayer();
+    setView(SCR.view);
+    renderMarkers("Loading markers");
+    requestDraw();
+    ensureTags().catch(() => {});
+    loadScript();
+    await loadClipMarkers(c, token);
   }
 
   /* The clip editor's Markers tab writes to the same folder. While a clip is
@@ -1753,7 +1883,7 @@
       } else {
         S.markers = keep;          // same markers: keep the objects the screen points at
       }
-      if (SCR.view === "script" && !SCR.dirty && document.activeElement !== scriptBox) await loadScript();
+      if (current === "#screen-script" && !SCR.dirty && document.activeElement !== scriptBox) await loadScript();
     } catch (e) {
       if (token === S.openToken) S.markers = keep;
       if (e instanceof AuthError) needSignIn();
@@ -1762,18 +1892,26 @@
     }
   }
 
-  function closeClip() {
+  function leaveClip() {
     saveScript();
     clearInterval(syncTimer);
     savePos();
     S.openToken++;
     destroyPlayer();
     S.clip = null;
-    showClips();
   }
 
-  $("#clip-back").addEventListener("click", closeClip);
+  $("#clip-back").addEventListener("click", () => {
+    leaveClip();
+    showClips("markers");
+  });
+  $("#script-back").addEventListener("click", () => {
+    scriptBox.blur();
+    leaveClip();
+    showClips("script");
+  });
   playBtn.addEventListener("click", togglePlay);
+  $("#sv-play").addEventListener("click", togglePlay);
   for (const b of $$("[data-skip]")) b.addEventListener("click", () => seekVod(vodNow() + Number(b.dataset.skip)));
 
   /* ---------- talking parts ----------
@@ -2080,12 +2218,14 @@
   // Tap steps 1x -> the chosen speed (2x to start) -> 4x -> 1x. Press and
   // hold for 1.25 to 2x, slide to one and let go: it plays at that speed and
   // becomes the tap's middle stop. Direct player only: Twitch's player can't
-  // be sped up from outside.
+  // be sped up from outside. On a phone that can't do 4x (an iPhone, below)
+  // the top stop is 2x.
 
   const RATES = [2, 1.75, 1.5, 1.25];
   const FAST = 4;
   let rate = 1;
   let altRate = 2;
+  let topRate = FAST;
   const speedBtn = $("#speed");
   const speedMenu = $("#speed-menu");
   let speedPress = null;
@@ -2113,34 +2253,82 @@
     speedBtn.setAttribute("aria-label", on ? `Playback speed ${rate}x. Hold for other speeds.` : "Playback speed (Direct player only)");
   }
 
-  // Some phones only go to 2x on a stream. If the video doesn't keep up with
-  // 4x over 2 s of smooth playing (or won't take it at all), it drops to 2x.
-  let fastTimer = 0;
-  function checkFast() {
-    clearTimeout(fastTimer);
-    const v = DV.el;
-    if (rate !== FAST || mode !== "direct" || !v) return;
-    if (Math.abs(v.playbackRate - FAST) > 0.01) {
-      fastFailed();
-      return;
-    }
-    if (v.paused) return;                      // checked again on "playing"
-    const t0 = v.currentTime;
-    const at0 = performance.now();
-    let rough = false;
-    const onRough = () => { rough = true; };
-    for (const n of ["waiting", "seeking"]) v.addEventListener(n, onRough, { once: true });
-    fastTimer = setTimeout(() => {
-      for (const n of ["waiting", "seeking"]) v.removeEventListener(n, onRough);
-      if (rate !== FAST || DV.el !== v || v.paused || rough) return;
-      if ((v.currentTime - t0) / ((performance.now() - at0) / 1000) < 2.6) fastFailed();
-    }, 2000);
+  /* An iPhone plays Twitch's stream at up to 2x: Safari's player only goes
+     past 2x on a stream with fast-forward (I-frame) tracks, and Twitch's VODs
+     have none (Apple's QA1772: rates over 2.0 need canPlayFastForward). Other
+     phones may manage, so 4x is tried and its first 3 s of playing watched.
+     If the video won't take 4x, stops by itself, or moves slower than 2.6x
+     without stalling, that's the phone: it goes to 2x and remembers 2x as its
+     top speed, so the button skips 4x from then on (the gear menu can try 4x
+     again). Moving slowly because it keeps stalling is the connection: 2x for
+     now, nothing remembered. Stalls don't restart the watch (they used to,
+     so a 4x that kept stalling was never caught). Each verdict goes to
+     logs/phone-speed.json in Dropbox, to look at on the PC. */
+  const FW = { v: null, timer: 0, t0: 0, at0: 0, stalls: 0, playAt: -1e9, pausedAt: -1e9 };
+
+  function stopFastWatch() {
+    clearInterval(FW.timer);
+    FW.v = null;
   }
 
-  function fastFailed() {
-    setRate(2);
-    toast("This phone plays the stream at up to 2x.");
+  function checkFast() {
+    stopFastWatch();
+    const v = DV.el;
+    if (rate <= 2 || mode !== "direct" || !v) return;
+    if (Math.abs(v.playbackRate - rate) > 0.01) {
+      fastCapped("rate not taken", null, false);
+      return;
+    }
+    if (v.paused || v.seeking || v.readyState < 3) return;     // watched from "playing"
+    Object.assign(FW, { v, t0: v.currentTime, at0: performance.now(), stalls: 0 });
+    FW.timer = setInterval(() => {
+      if (FW.v !== v || DV.el !== v || rate <= 2) {
+        stopFastWatch();
+        return;
+      }
+      const secs = (performance.now() - FW.at0) / 1000;
+      if (v.paused || secs < 3) return;
+      const speed = (v.currentTime - FW.t0) / secs;
+      const stalls = FW.stalls;
+      stopFastWatch();
+      if (speed >= 2.6) fastLog("ok", speed, stalls);
+      else if (stalls) fastSlow(speed, stalls);
+      else fastCapped("plays slower", speed, false);
+    }, 250);
   }
+
+  function fastCapped(why, speed, resume) {
+    stopFastWatch();
+    fastLog(why, speed, 0);
+    topRate = 2;
+    store.set("ms.topRate", 2);
+    setRate(2);
+    if (resume && DV.el && DV.el.paused) directPlay();
+    toast("This phone plays Twitch's stream at up to 2x, so the speed button stops at 2x now. The gear button says why.");
+  }
+
+  function fastSlow(speed, stalls) {
+    fastLog("kept stalling", speed, stalls);
+    setRate(2);
+    toast("4x kept stopping to load, so it's at 2x. A lower video quality (gear button) gives it more room.");
+  }
+
+  function fastLog(why, speed, stalls) {
+    const v = DV.el;
+    const list = store.get("ms.speedlog", []) || [];
+    list.push({ when: new Date().toISOString(), why, speed: speed == null ? null : Math.round(speed * 100) / 100, stalls,
+      asked: rate, took: v ? v.playbackRate : null, quality: DV.src ? DV.src.height : null, browser: navigator.userAgent });
+    while (list.length > 30) list.shift();
+    store.set("ms.speedlog", list);
+    outbox.put("/logs/phone-speed.json", JSON.stringify({ entries: list }, null, 1));
+  }
+
+  $("#speed-retry").addEventListener("click", () => {
+    topRate = FAST;
+    store.del("ms.topRate");
+    renderViewSheet();
+    toast("The speed button goes to 4x again. If this phone still can't, it drops back to 2x.");
+  });
 
   function openSpeedMenu() {
     for (const o of speedMenu.querySelectorAll("[data-rate]")) {
@@ -2202,7 +2390,7 @@
       toast("Speed works with the Direct player (the gear button, Video player).");
       return;
     }
-    setRate(rate === 1 ? altRate : rate < FAST ? FAST : 1);
+    setRate(rate === 1 ? altRate : rate < topRate ? topRate : 1);
     checkFast();
   });
 
@@ -2321,15 +2509,20 @@
 
   function frame() {
     raf = 0;
-    if (current !== "#screen-clip") return;
+    const marking = current === "#screen-clip";
+    if (!marking && current !== "#screen-script") return;
     reconcile();
     const t = now();
     if (dirty || t !== lastDrawn) {
       dirty = false;
       lastDrawn = t;
-      drawOverview(t);
-      drawDetail(t);
-      $("#t-now").textContent = fmtTime(t, true);
+      if (marking) {
+        drawOverview(t);
+        drawDetail(t);
+        $("#t-now").textContent = fmtTime(t, true);
+      } else {
+        $("#sv-now").textContent = fmtTime(t, true);
+      }
       updateNear(t);
     }
     const active = videoActive();
@@ -2665,7 +2858,7 @@
   // Scrolls the marker list only (never the screen) so the row is in view,
   // centered when it has to move.
   function revealRow(id) {
-    const box = $(".markers-wrap");
+    const box = $("#screen-clip .markers-wrap");
     const row = box.querySelector(`.mrow[data-id="${CSS.escape(id)}"]`);
     if (!row) return;
     const b = box.getBoundingClientRect();
@@ -2817,13 +3010,13 @@
     if (touches.size !== 1) return;
     const press = { id: e.pointerId, x: e.clientX, t: now(), moved: false, moving: false, hold: 0 };
     const m = markerAt(dt, e.clientX, 16);
-    // The second tap of a double tap on a flag, held down: dragging sets its clip.
+    // The second tap of a double tap on a flag: lift and the marker opens;
+    // keep the finger down and drag, and it sets the marker's clip.
     if (m && flagTap && flagTap.m === m && performance.now() - flagTap.at < DOUBLE_MS) {
       clearTimeout(flagTap.timer);
       flagTap = null;
-      press.region = true;
+      press.second = m;
       dd = press;
-      startSpan(m);
       return;
     }
     press.flag = m;
@@ -2845,6 +3038,11 @@
       return;
     }
     if (!dd || e.pointerId !== dd.id) return;
+    if (dd.second && !dd.region) {
+      if (Math.abs(e.clientX - dd.x) < 6) return;
+      dd.region = true;
+      startSpan(dd.second);
+    }
     if (dd.region) {
       spanTo(ddTime(e));
       return;
@@ -2873,6 +3071,8 @@
     clearTimeout(dd.hold);
     if (dd.region) {
       endSpan(cancelled);
+    } else if (dd.second) {
+      if (!cancelled) editFromWave(dd.second);
     } else if (dd.moving) {
       drop(cancelled);
     } else if (dd.moved) {
@@ -2901,9 +3101,18 @@
      second tap, keep the finger down and drag: left of the marker sets where
      the clip starts, right of it where it ends. Saved as pre / post (seconds
      before and after the marker), so it moves with the marker. The clip
-     editor's Markers tab exports them; in Premiere they're range markers. */
+     editor's Markers tab exports them; in Premiere they're range markers.
+     A plain double tap (no drag) opens the marker instead. */
   const DOUBLE_MS = 300;
   let flagTap = null;                 // {m, at, timer}: a tap on a flag, waiting for a second
+
+  // Double-tapped: the marker opens, paused like + Marker, playing on after.
+  function editFromWave(m) {
+    const resume = videoActive();
+    if (resume) pauseVideo();
+    swallowClick();
+    openEditor(m, resume);
+  }
 
   const spanOf = (v) => (typeof v === "number" && v > 0 && v < 1e7 ? v : 0);
   const fmtLen = (sec) => (sec < 60 ? `${sec.toFixed(1)}s` : fmtTime(sec));
@@ -3042,13 +3251,16 @@
     return ts.length ? ts.some((t) => markerFilter.has(t.id)) : markerFilter.has(NO_TAG);
   }
 
+  // The marking screen and the script screen's Markers each have a Filter;
+  // they share what's picked.
   function renderFilter() {
-    const btn = $("#filter");
+    const sv = current === "#screen-script";
+    const btn = $(sv ? "#sv-filter" : "#filter");
     btn.textContent = markerFilter.size ? `Filter · ${markerFilter.size}` : "Filter";
     btn.classList.toggle("on", markerFilter.size > 0);
     btn.setAttribute("aria-expanded", String(filterOpen));
-    const box = $("#filter-chips");
-    box.hidden = !filterOpen || SCR.view !== "markers";
+    const box = $(sv ? "#sv-filter-chips" : "#filter-chips");
+    box.hidden = !filterOpen;
     if (box.hidden) return;
     box.replaceChildren();
     // The tags on this clip's markers, plus any picked ones, in tag-list order.
@@ -3089,16 +3301,44 @@
     }
   }
 
-  $("#filter").addEventListener("click", () => {
-    filterOpen = !filterOpen;
-    renderFilter();
-  });
+  for (const id of ["#filter", "#sv-filter"]) {
+    $(id).addEventListener("click", () => {
+      filterOpen = !filterOpen;
+      renderFilter();
+    });
+  }
 
+  // A marker's row: time, clip length, note, tag suffixes. Tapping it does onTap.
+  function markerRow(m, onTap) {
+    const li = el("li", "mrow" + (m.id === nearId ? " near" : "") + (m.id === heldId ? " held" : ""));
+    li.dataset.id = m.id;
+    li.style.setProperty("--mc", colorHex(m.color));
+    const main = button("mrow-main", null, onTap);
+    main.append(el("span", "mrow-time", fmtTime(mClip(m), true)));
+    const reg = mRegion(m);
+    if (reg) main.append(el("span", "mrow-len", fmtLen(reg[1] - reg[0])));
+    main.append(el("span", m.note ? "mrow-note" : "mrow-note dim", m.note || "No note"));
+    const sx = markerTags(m).filter((t) => t.suffix);
+    if (sx.length) {
+      const box = el("span", "mrow-tags");
+      for (const t of sx) {
+        const x = el("span", "suffix", t.suffix);
+        tintTag(x, t);
+        box.append(x);
+      }
+      main.append(box);
+    }
+    li.append(main);
+    return li;
+  }
+
+  // Whichever screen is showing: the marking list, or the script screen's.
   function renderMarkers(loadingText) {
-    const ul = $("#markers");
+    const sv = current === "#screen-script";
+    const ul = $(sv ? "#sv-markers" : "#markers");
     ul.replaceChildren();
     const shown = S.markers.filter(passesFilter);
-    $("#marker-count").textContent = !S.markers.length ? ""
+    $(sv ? "#sv-count" : "#marker-count").textContent = !S.markers.length ? ""
       : markerFilter.size ? `${shown.length} of ${S.markers.length}` : String(S.markers.length);
     renderFilter();
     if (S.markersError) {
@@ -3107,33 +3347,27 @@
       ul.append(li);
     }
     if (!S.markers.length) {
-      if (!S.markersError) ul.append(el("li", "empty", loadingText || "No markers yet. Tap + at a moment worth keeping."));
+      if (!S.markersError) {
+        ul.append(el("li", "empty", loadingText
+          || (sv ? "No markers on this clip yet. Mark it from Markers on the home screen." : "No markers yet. Tap + at a moment worth keeping.")));
+      }
       return;
     }
     if (!shown.length) ul.append(el("li", "empty", "No markers with those tags."));
     for (const m of shown) {
-      const li = el("li", "mrow" + (m.id === nearId ? " near" : "") + (m.id === heldId ? " held" : ""));
-      li.dataset.id = m.id;
-      li.style.setProperty("--mc", colorHex(m.color));
-      const mt = mClip(m);
-      const main = button("mrow-main", null, () => seekMarker(m));
-      main.append(el("span", "mrow-time", fmtTime(mt, true)));
-      const reg = mRegion(m);
-      if (reg) main.append(el("span", "mrow-len", fmtLen(reg[1] - reg[0])));
-      main.append(el("span", m.note ? "mrow-note" : "mrow-note dim", m.note || "No note"));
-      const sx = markerTags(m).filter((t) => t.suffix);
-      if (sx.length) {
-        const box = el("span", "mrow-tags");
-        for (const t of sx) {
-          const x = el("span", "suffix", t.suffix);
-          tintTag(x, t);
-          box.append(x);
-        }
-        main.append(box);
+      const at = fmtTime(mClip(m), true);
+      if (sv) {
+        const li = markerRow(m, mode ? () => watchMarker(m) : null);
+        const add = button("mrow-edit sv-add", "+", () => addToScript(m));
+        add.setAttribute("aria-label", `Put the marker at ${at} in the script`);
+        li.append(add);
+        ul.append(li);
+        continue;
       }
+      const li = markerRow(m, () => seekMarker(m));
       const edit = button("mrow-edit", "Edit", () => openEditor(m, false));
-      edit.setAttribute("aria-label", `Edit marker at ${fmtTime(mt, true)}`);
-      li.append(main, edit);
+      edit.setAttribute("aria-label", `Edit marker at ${at}`);
+      li.append(edit);
       ul.append(li);
     }
   }
@@ -3150,7 +3384,7 @@
     }
     if (best === nearId) return;
     nearId = best;
-    for (const li of $$("#markers .mrow")) li.classList.toggle("near", li.dataset.id === nearId);
+    for (const li of $$("#markers .mrow, #sv-markers .mrow")) li.classList.toggle("near", li.dataset.id === nearId);
   }
 
   $("#add").addEventListener("click", () => {
@@ -3324,26 +3558,42 @@
   });
 
   /* ---------- script ----------
-     The clip's script.md, next to its markers in Dropbox: the clip editor's
-     5 · Script tab writes the same file. Saved a moment after you stop
-     typing (through the outbox, so offline is fine), and picked up from the
-     PC on the 10 s check while you're not typing in it. */
-  const SCR = { view: "markers", clipId: null, rev: null, dirty: false, timer: 0, loading: false };
+     The Script screen (Script on the home screen): the clip's script.md, next
+     to its markers in Dropbox; the clip editor's 5 · Script tab writes the
+     same file. Saved a moment after you stop typing (through the outbox, so
+     offline is fine), and picked up from the PC on the 10 s check while
+     you're not typing in it. It can't be typed in until it has loaded, so a
+     slow load can't be saved over. The switch under the video flips between
+     the script and the clip's markers: tap one to watch it, + to put it in. */
+  const SCR = { view: "script", clipId: null, rev: null, dirty: false, timer: 0, loading: false, loaded: false };
   const scriptPath = () => `${S.clip.folder}/script.md`;
   const scriptBox = $("#script-text");
 
   function setView(v) {
     SCR.view = v;
-    for (const [id, on] of [["#tab-markers", v === "markers"], ["#tab-script", v === "script"]]) {
-      $(id).classList.toggle("on", on);
+    for (const [id, on] of [["#tab-script", v === "script"], ["#tab-markers", v === "markers"]]) {
       $(id).setAttribute("aria-selected", String(on));
+      $(id).setAttribute("aria-pressed", String(on));
     }
-    $("#markers").hidden = v !== "markers";
-    $("#filter").hidden = v !== "markers";
     $("#script-view").hidden = v !== "script";
-    $(".markers-wrap").classList.toggle("scripting", v === "script");
-    renderFilter();
-    if (v === "script") loadScript();
+    $("#sv-markers-view").hidden = v !== "markers";
+    if (v === "markers") renderMarkers();
+  }
+
+  function scriptReady(on) {
+    SCR.loaded = on;
+    scriptBox.readOnly = !on;
+  }
+
+  // From the region's start if it has one, else a couple of seconds before.
+  function watchMarker(m) {
+    const r = mRegion(m);
+    seekClip(r ? r[0] : Math.max(0, mClip(m) - 2));
+    playVideo();
+  }
+
+  function addToScript(m) {
+    if (insertScript(scriptLine(m) + "\n")) toast("Added to the script", { label: "Show", run: () => setView("script") });
   }
 
   function scriptStatus(text) {
@@ -3360,13 +3610,16 @@
     if (!c || SCR.loading) return;
     if (SCR.clipId !== c.id) {
       Object.assign(SCR, { clipId: c.id, rev: null, dirty: false });
+      scriptReady(false);
       scriptBox.value = "";
       scriptStatus("Loading the script");
+      scriptCaret();
     }
     const path = scriptPath();
     const pending = outbox.ops.filter((o) => o.kind === "put" && o.path.toLowerCase() === path.toLowerCase()).pop();
-    if (pending && !SCR.dirty && scriptBox.value !== pending.text && document.activeElement !== scriptBox) {
-      scriptBox.value = pending.text;
+    if (pending && !SCR.dirty && document.activeElement !== scriptBox) {
+      if (scriptBox.value !== pending.text) scriptBox.value = pending.text;
+      scriptReady(true);
       scriptStatus();
       return;
     }
@@ -3375,6 +3628,7 @@
       const meta = await dbx.meta(path);
       if (S.clip !== c || SCR.clipId !== c.id) return;
       if (!meta || meta.rev === SCR.rev) {
+        scriptReady(true);
         scriptStatus();
         return;
       }
@@ -3384,6 +3638,7 @@
       if (SCR.dirty || (document.activeElement === scriptBox && scriptBox.value !== text && SCR.rev)) return;
       SCR.rev = meta.rev;
       if (scriptBox.value !== text) scriptBox.value = text;
+      scriptReady(true);
       scriptStatus();
       scriptCaret();
     } catch (e) {
@@ -3414,18 +3669,16 @@
   function fitViewport() {
     const vv = window.visualViewport;
     document.documentElement.style.setProperty("--vvh", `${Math.round(vv ? vv.height : window.innerHeight)}px`);
-    if ($("#screen-clip").classList.contains("writing")) window.scrollTo(0, 0);
+    if ($("#screen-script").classList.contains("writing")) window.scrollTo(0, 0);
   }
   if (window.visualViewport) window.visualViewport.addEventListener("resize", fitViewport);
   scriptBox.addEventListener("focus", () => {
     fitViewport();
-    $("#screen-clip").classList.add("writing");
+    $("#screen-script").classList.add("writing");
   });
   scriptBox.addEventListener("blur", () => {
     saveScript();
-    $("#screen-clip").classList.remove("writing");
-    resizeCanvases();
-    requestDraw();
+    $("#screen-script").classList.remove("writing");
   });
   for (const n of ["click", "keyup", "select"]) scriptBox.addEventListener(n, scriptCaret);
 
@@ -3439,6 +3692,10 @@
   // Whole lines: with the cursor partway along a line they go after that
   // line, never into the middle of it.
   function insertScript(text) {
+    if (!SCR.loaded) {
+      toast("The script is still loading.");
+      return false;
+    }
     const v = scriptBox.value;
     let a = scriptBox.selectionStart ?? v.length;
     let b = scriptBox.selectionEnd ?? a;
@@ -3449,6 +3706,7 @@
     }
     scriptBox.setRangeText(text, a, b, "end");
     scriptBox.dispatchEvent(new Event("input"));
+    return true;
   }
 
   $("#sc-insert").addEventListener("click", () => {
@@ -3519,13 +3777,14 @@
     }
     outbox.flush();
     if (current === "#screen-clips") refreshClips();
-    if (current === "#screen-clip") syncOpenClip();
+    if (current === "#screen-clip" || current === "#screen-script") syncOpenClip();
   });
   window.addEventListener("pagehide", saveScript);
 
   function init() {
     if (CFG.debug) {   // automated tests only
-      window.__ms = { TP, DV, S, VZ, VOL, SCR, talk, vodNow, now, mRegion, mode: () => mode, rate: () => rate, tags: () => tags, syncOpenClip, jumpTalk };
+      window.__ms = { TP, DV, S, VZ, VOL, SCR, FW, talk, vodNow, now, mRegion, mode: () => mode, rate: () => rate,
+        topRate: () => topRate, tags: () => tags, syncOpenClip, jumpTalk, current: () => current };
     }
     const z = store.get("ms.zoom", 30);
     S.zoom = typeof z === "number" && z >= ZOOM_MIN && z <= ZOOM_MAX ? z : 30;
@@ -3534,13 +3793,14 @@
     playerPref = store.get("ms.player", "direct") === "twitch" ? "twitch" : "direct";
     const sp = store.get("ms.speed", 2);
     altRate = RATES.includes(sp) ? sp : 2;
+    topRate = store.get("ms.topRate", FAST) === 2 ? 2 : FAST;
     const vol = store.get("ms.volume", 1);
     VOL.v = typeof vol === "number" && vol >= 0 && vol <= 1 ? vol : 1;
     renderVolume();
     renderSync();
     if (!APP_KEY) return show("#screen-setup");
     if (!auth.signedIn()) return showConnect();
-    showClips();
+    showHome();
     ensureTags().catch(() => {});
     outbox.flush();
   }
