@@ -1392,6 +1392,7 @@
     E.open = true;
     E.loading = true;                       // what opening sets up isn't an edit
     E.touched = false;
+    E.copyGone = false;
     show("#screen-vedit");
     A.renderSync();
     $("#ve-title").textContent = c.name;
@@ -1489,7 +1490,8 @@
         return;
       } catch { /* fall through */ }
     }
-    msg("The video didn't load. Go back and open the clip again.");
+    msg(E.copyGone ? "This clip was exported and its phone copy removed. Tap it in the list to edit it again."
+                   : "The video didn't load. Go back and open the clip again.");
   });
 
   function leaveEditor() {
@@ -1514,6 +1516,13 @@
       if (E.tab === "export") { renderPath(); renderJobs(); }
     }
     const c = ST.doc && ST.doc.clips[E.id];
+    // Exported: the PC deletes the phone copy right away. What's already loaded
+    // keeps playing, and the edit can still be exported again (that renders
+    // from the real clip, not the copy).
+    if (c && c.done && (!c.copy || c.copy.status !== "ready") && !E.copyGone) {
+      E.copyGone = true;
+      toast("Exported. The PC removed this clip's phone copy. Tap the clip in the list to edit it again.");
+    }
     if (c && c.copy && c.copy.status === "ready" && c.copy.stamp !== E.copy.stamp) {
       toast("The PC remade this clip's copy (the clip changed). Open it again to see the new one.");
       E.copy = { ...E.copy, stamp: c.copy.stamp };
