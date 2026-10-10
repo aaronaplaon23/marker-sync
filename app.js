@@ -3339,6 +3339,8 @@
   // Whichever screen is showing: the marking list, or the script screen's.
   function renderMarkers(loadingText) {
     const sv = current === "#screen-script";
+    // A marker's note changed, or one came or went: the docs' links follow.
+    if (sv) for (const d of Object.keys(DOCS)) highlight(DOCS[d].box);
     const ul = $(sv ? "#sv-markers" : "#markers");
     ul.replaceChildren();
     const shown = S.markers.filter(passesFilter);
@@ -3591,12 +3593,43 @@
     document.documentElement.classList.add("ios");
   }
 
+  /* A marker in a doc ("[0:40] dies to lava") is underlined yellow and is a
+     link: a tap is Go to for it. Any [time] or [time to time] is one; the
+     text after it is too while it's still that marker's own note. */
+  const MK_RE = /\[(\d{1,2}(?::\d{2}){1,2}(?:\.\d+)?)(?:\s+to\s+\d{1,2}(?::\d{2}){1,2}(?:\.\d+)?)?\]/g;
+  const clockSecs = (s) => s.split(":").reduce((acc, p) => acc * 60 + Number(p), 0);
+  const escHtml = (s) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+
   function highlight(box) {
     const hl = box.previousElementSibling;
-    const esc = box.value.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]);
+    const v = box.value;
+    const spans = [];     // [start, end, opening tag]
+    for (const m of v.matchAll(HL_RE)) {
+      const a = m.index + m[1].length;
+      spans.push([a, a + m[2].length + m[3].length, `<mark class="hl-${m[2].toLowerCase()}">`]);
+    }
+    const lines = new Map();   // "[0:40]" -> that time's marker lines
+    for (const m of S.clip ? S.markers : []) {
+      const l = scriptLine(m);
+      const key = l.slice(0, l.indexOf("]") + 1);
+      lines.set(key, [...(lines.get(key) || []), l]);
+    }
+    for (const m of v.matchAll(MK_RE)) {
+      let end = m.index + m[0].length;
+      for (const l of lines.get(m[0]) || []) {
+        if (m.index + l.length > end && v.startsWith(l, m.index)) end = m.index + l.length;
+      }
+      spans.push([m.index, end, `<mark class="hl-mk" data-t="${clockSecs(m[1])}">`]);
+    }
+    spans.sort((x, y) => x[0] - y[0]);
+    let html = "", at = 0;
+    for (const [a, b, tag] of spans) {
+      if (a < at) continue;   // a [time] inside a marker's note
+      html += escHtml(v.slice(at, a)) + tag + escHtml(v.slice(a, b)) + "</mark>";
+      at = b;
+    }
     // The trailing space keeps a last empty line as tall as the textarea's.
-    hl.innerHTML = esc.replace(HL_RE, (_, sp, word, colon) =>
-      `${sp}<mark class="hl-${word.toLowerCase()}">${word}${colon}</mark>`) + " ";
+    hl.innerHTML = html + escHtml(v.slice(at)) + " ";
     hl.scrollTop = box.scrollTop;
   }
   const docBox = (d = SCR.doc) => DOCS[d].box;
@@ -3937,8 +3970,7 @@
     const v = box.value;
     const [a, b] = lineAt(v, box.selectionStart || 0);
     const hit = /\[(\d{1,2}(?::\d{2}){1,2}(?:\.\d+)?)/.exec(v.slice(a, b));
-    if (!hit) return null;
-    return hit[1].split(":").reduce((acc, p) => acc * 60 + Number(p), 0);
+    return hit ? clockSecs(hit[1]) : null;
   }
 
   function scriptCaret() {
@@ -3951,6 +3983,45 @@
     const t = caretTime();
     if (t != null) seekClip(t);
   });
+
+  /* A tap on a marker's yellow underline is Go to for it. With the keyboard
+     down it only goes there (the keyboard stays down); while typing, the
+     cursor lands there too. A drag, a long press or a double tap is plain
+     editing. The underline is on the layer under the text, so the tap is
+     found by where it lands on that layer. */
+  function linkAt(box, x, y) {
+    for (const mk of box.previousElementSibling.querySelectorAll(".hl-mk")) {
+      for (const r of mk.getClientRects()) {
+        if (x >= r.left - 3 && x <= r.right + 3 && y >= r.top - 3 && y <= r.bottom + 3) return mk;
+      }
+    }
+    return null;
+  }
+  const linksOn = () => !!(S.clip && hasVideo(S.clip));
+  for (const d of Object.keys(DOCS)) {
+    const box = DOCS[d].box;
+    let tap = null;
+    box.addEventListener("touchstart", (e) => {
+      const t = e.touches[0];
+      tap = e.touches.length === 1 && document.activeElement !== box
+        ? { x: t.clientX, y: t.clientY, at: Date.now() } : null;
+    }, { passive: true });
+    box.addEventListener("touchend", (e) => {
+      const was = tap;
+      tap = null;
+      const t = e.changedTouches[0];
+      if (!was || !linksOn() || Date.now() - was.at > 500 || Math.hypot(t.clientX - was.x, t.clientY - was.y) > 10) return;
+      const mk = linkAt(box, t.clientX, t.clientY);
+      if (!mk) return;
+      e.preventDefault();       // no focus, no keyboard, no click after
+      seekClip(Number(mk.dataset.t));
+    });
+    box.addEventListener("click", (e) => {
+      if (e.detail > 1 || box.selectionStart !== box.selectionEnd || !linksOn()) return;
+      const mk = linkAt(box, e.clientX, e.clientY);
+      if (mk) seekClip(Number(mk.dataset.t));
+    });
+  }
   // The doc's buttons leave the typing where it is (focus, keyboard, layout).
   for (const b of $$(".script-tools button")) b.addEventListener("mousedown", (e) => e.preventDefault());
   $("#tab-beats").addEventListener("click", () => setView("beats"));

@@ -517,6 +517,11 @@ code, .mono { font-family: var(--mono); }
 /* Widened sideways so the mark still covers the word if iOS's inset differs. */
 .st-hl .hl-but { background: rgba(239, 68, 68, 0.55); box-shadow: -3px 0 0 rgba(239, 68, 68, 0.55), 3px 0 0 rgba(239, 68, 68, 0.55); }
 .st-hl .hl-therefore { background: rgba(63, 185, 80, 0.5); box-shadow: -3px 0 0 rgba(63, 185, 80, 0.5), 3px 0 0 rgba(63, 185, 80, 0.5); }
+/* A marker put in: a tap goes to its moment in the video. */
+.st-hl .hl-mk {
+  background: transparent; text-decoration-line: underline; text-decoration-color: #f5c518;
+  text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-skip-ink: none;
+}
 .script-status { margin: 0; min-height: 18px; }
 .script-screen.writing { height: var(--vvh, 100dvh); }
 .script-screen.writing .sv-transport,
