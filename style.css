@@ -799,6 +799,10 @@ code, .mono { font-family: var(--mono); }
 .ve-tbtn.on { border-color: var(--accent); background: var(--accent-lo); color: var(--accent); }
 .ve-tbtn.mute { min-width: 42px; }
 .ve-tbtn.mute.on { border-color: var(--red); background: var(--red-lo); color: var(--red); }
+.ve-tbtn.solo { min-width: 42px; }
+.ve-tbtn.solo.on { border-color: var(--marker); background: var(--marker-lo); color: var(--marker); }
+.ve-track.solo-quiet { opacity: 0.7; }
+.ve-summary .ve-solo-note { color: var(--marker); }
 .ve-track-vol { display: grid; grid-template-columns: 1fr 48px; align-items: center; gap: 10px; margin-top: 4px; }
 .ve-track-vol input { width: 100%; height: 30px; margin: 0; accent-color: var(--tc); }
 .ve-track-vol .mono { font-size: 13px; color: var(--t2); text-align: right; }

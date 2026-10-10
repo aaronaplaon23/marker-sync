@@ -791,9 +791,12 @@
     AE.driftTimer = setInterval(driftCheck, 800);
   }
 
+  // Solo is for listening only, as on the PC: the export keeps every unmuted track.
   function applyGains() {
+    const anySolo = E.tracks.some((t) => t.solo);
     E.tracks.forEach((t, i) => {
-      if (AE.gains[i]) AE.gains[i].gain.value = t.enabled ? t.volume : 0;
+      const audible = t.enabled && (!anySolo || t.solo);
+      if (AE.gains[i]) AE.gains[i].gain.value = audible ? t.volume : 0;
     });
   }
 
@@ -839,7 +842,8 @@
     const ul = $("#ve-tracks");
     ul.replaceChildren();
     E.tracks.forEach((t, i) => {
-      const li = el("li", `ve-track${t.enabled ? "" : " muted-track"}`);
+      const quiet = t.enabled && E.tracks.some((x) => x.solo) && !t.solo;     // another track is soloed
+      const li = el("li", `ve-track${t.enabled ? "" : " muted-track"}${quiet ? " solo-quiet" : ""}`);
       li.style.setProperty("--tc", TRACK_COLORS[i % TRACK_COLORS.length]);
       const top = el("div", "ve-track-top");
       const name = el("span", "ve-track-name", trackLabel(i));
@@ -862,7 +866,15 @@
       });
       mute.setAttribute("aria-label", t.enabled ? `Mute ${trackLabel(i)}` : `Unmute ${trackLabel(i)}`);
       mute.setAttribute("aria-pressed", String(!t.enabled));
-      top.append(wave, mute);
+      const solo = button(`ve-tbtn solo${t.solo ? " on" : ""}`, "S", () => {
+        t.solo = !t.solo;
+        applyGains();
+        renderTracks();
+        renderSummary();
+      });
+      solo.setAttribute("aria-label", t.solo ? `Stop soloing ${trackLabel(i)}` : `Solo ${trackLabel(i)}`);
+      solo.setAttribute("aria-pressed", String(!!t.solo));
+      top.append(wave, mute, solo);
       const row = el("div", "ve-track-vol");
       const slider = el("input");
       Object.assign(slider, { type: "range", min: "0", max: "200", step: "1", value: String(Math.round(t.volume * 100)) });
@@ -1147,6 +1159,7 @@
         if (!a) return;
         t.enabled = a.enabled !== false;
         t.volume = typeof a.volume === "number" ? a.volume : 1;
+        t.solo = !!a.solo;                   // a preset brings its solos back, as on the PC
       });
     }
     applyGains();
@@ -1170,7 +1183,8 @@
     $("#ve-summary").replaceChildren(
       el("div", null, layoutSummary()),
       el("div", null, `Trim: ${fmtTime(E.inS, true)} to ${fmtTime(E.outS, true)} (${(E.outS - E.inS).toFixed(1)}s)`),
-      el("div", null, `Audio: ${on.length ? on.join(", ") : "none (silent)"}`));
+      el("div", null, `Audio: ${on.length ? on.join(", ") : "none (silent)"}`),
+      ...(E.tracks.some((t) => t.solo) ? [el("div", "ve-solo-note", "Solo is on while you watch. The export still has every unmuted track.")] : []));
   }
 
   /* ---- saving the edit: a draft per clip, in Dropbox ---- */
@@ -1267,7 +1281,7 @@
     // Keep the PC's lane choices for a preset it already had; the phone's
     // own waveform picks stay on the phone.
     const look = { ...mixPayload(), audio: E.tracks.map((t, i) => ({
-      enabled: t.enabled, solo: false, volume: t.volume,
+      enabled: t.enabled, solo: !!t.solo, volume: t.volume,
       hidden: old && Array.isArray(old.audio) && old.audio[i] ? !!old.audio[i].hidden : true })) };
     sendRequest({ type: "preset_save", name, look });
     presetOps.push({ op: "save", name, look, at: Date.now() });
@@ -1412,7 +1426,7 @@
     const waves = store.get("ve.waves", null);
     const micIdx = (d.tracks || []).findIndex((t) => t.obs_track === d.mic_obs_track);
     E.tracks = (c.audio || []).map((_, i) => ({
-      enabled: true, volume: 1, silent: !!((E.copy.tracks || [])[i] || {}).silent,
+      enabled: true, volume: 1, solo: false, silent: !!((E.copy.tracks || [])[i] || {}).silent,
       wave: Array.isArray(waves) && waves.length === (c.audio || []).length ? !!waves[i] : i === micIdx,
     }));
     await loadWatermark();
