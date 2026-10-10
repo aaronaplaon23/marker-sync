@@ -923,7 +923,9 @@
       const meta = el("span", "clip-meta");
       if (script) {
         const f = c.files["script.md"];
-        meta.append(el("span", `state ${f ? "state-ready" : "state-none"}`, f ? `Script, edited ${fmtWhen(f.server_modified)}` : "No script yet"));
+        const tb = c.files["therefore-but.md"];
+        meta.append(el("span", `state ${f || tb ? "state-ready" : "state-none"}`, f ? `Script, edited ${fmtWhen(f.server_modified)}`
+          : tb ? `Therefore / But, edited ${fmtWhen(tb.server_modified)}` : "No script yet"));
       } else {
         meta.append(el("span", `state ${st.cls}`, st.text(c)));
       }
@@ -1832,12 +1834,11 @@
     for (const id of ["#script-video", "#sv-transport", "#sc-insert", "#sc-goto"]) $(id).hidden = !video;
     $("#sv-novideo").hidden = video;
     $("#sv-novideo").textContent = c.state === "pc"
-      ? "Marked on the PC, so its video is there, not here. The markers and the script are both here."
-      : "This clip's video isn't on the phone yet. The markers and the script are.";
-    $("#sv-hint").textContent = video ? "Tap to watch, + puts it in the script" : "+ puts it in the script";
+      ? "Marked on the PC, so its video is there, not here. The markers and both scripts are here."
+      : "This clip's video isn't on the phone yet. The markers and both scripts are.";
     if (video) startClipVideo(c);
     else destroyPlayer();
-    setView(SCR.view);
+    setView(c.files["script.md"] ? "script" : "beats");
     renderMarkers("Loading markers");
     requestDraw();
     ensureTags().catch(() => {});
@@ -1886,7 +1887,7 @@
       } else {
         S.markers = keep;          // same markers: keep the objects the screen points at
       }
-      if (current === "#screen-script" && !SCR.dirty && document.activeElement !== scriptBox) await loadScript();
+      if (current === "#screen-script") await loadScript();
     } catch (e) {
       if (token === S.openToken) S.markers = keep;
       if (e instanceof AuthError) needSignIn();
@@ -1909,7 +1910,7 @@
     showClips("markers");
   });
   $("#script-back").addEventListener("click", () => {
-    scriptBox.blur();
+    for (const d of Object.keys(DOCS)) DOCS[d].box.blur();
     leaveClip();
     showClips("script");
   });
@@ -3362,7 +3363,7 @@
       if (sv) {
         const li = markerRow(m, mode ? () => watchMarker(m) : null);
         const add = button("mrow-edit sv-add", "+", () => addToScript(m));
-        add.setAttribute("aria-label", `Put the marker at ${at} in the script`);
+        add.setAttribute("aria-label", `Put the marker at ${at} in ${DOCS[SCR.doc].name}`);
         li.append(add);
         ul.append(li);
         continue;
@@ -3561,31 +3562,53 @@
   });
 
   /* ---------- script ----------
-     The Script screen (Script on the home screen): the clip's script.md, next
-     to its markers in Dropbox; the clip editor's 5 · Script tab writes the
-     same file. Saved a moment after you stop typing (through the outbox, so
-     offline is fine), and picked up from the PC on the 10 s check while
-     you're not typing in it. It can't be typed in until it has loaded, so a
-     slow load can't be saved over. The switch under the video flips between
-     the script and the clip's markers: tap one to watch it, + to put it in. */
-  const SCR = { view: "script", clipId: null, rev: null, dirty: false, timer: 0, loading: false, loaded: false };
-  const scriptPath = () => `${S.clip.folder}/script.md`;
-  const scriptBox = $("#script-text");
+     The Script screen (Script on the home screen): a clip's two docs, next to
+     its markers in Dropbox and the same files as the clip editor's 5 · Script
+     tab. The Therefore / But (therefore-but.md) is the beats written from the
+     markers, "Therefore: …" / "But: …" pairs; the script (script.md) is
+     written from those. Each is saved a moment after you stop typing (through
+     the outbox, so offline is fine), and picked up from the PC on the 10 s
+     check while you're not typing in it. Neither can be typed in until it has
+     loaded, so a slow load can't be saved over. The switch under the video
+     flips between the two and the clip's markers: tap one to watch it, + to
+     put it in the doc you came from. */
+  const DOCS = {
+    beats: { file: "therefore-but.md", box: $("#beats-text"), name: "the Therefore / But" },
+    script: { file: "script.md", box: $("#script-text"), name: "the script" },
+  };
+  const docState = () => ({ rev: null, dirty: false, timer: 0, loading: false, loaded: false, note: "" });
+  const SCR = { view: "script", doc: "script", clipId: null, docs: { beats: docState(), script: docState() } };
+  const docPath = (d) => `${S.clip.folder}/${DOCS[d].file}`;
+  const docBox = (d = SCR.doc) => DOCS[d].box;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
+  // v: "beats" or "script" (that doc), or "markers" (the list, + into the doc
+  // you came from).
   function setView(v) {
     SCR.view = v;
-    for (const [id, on] of [["#tab-script", v === "script"], ["#tab-markers", v === "markers"]]) {
+    if (v !== "markers") SCR.doc = v;
+    for (const [id, on] of [["#tab-beats", v === "beats"], ["#tab-script", v === "script"], ["#tab-markers", v === "markers"]]) {
       $(id).setAttribute("aria-selected", String(on));
       $(id).setAttribute("aria-pressed", String(on));
     }
-    $("#script-view").hidden = v !== "script";
+    $("#script-view").hidden = v === "markers";
     $("#sv-markers-view").hidden = v !== "markers";
-    if (v === "markers") renderMarkers();
+    for (const d of Object.keys(DOCS)) DOCS[d].box.hidden = d !== SCR.doc;
+    $("#sc-beat").hidden = SCR.doc !== "beats";
+    $("#sc-outline").hidden = SCR.doc !== "script";
+    const video = S.clip && hasVideo(S.clip);
+    $("#sv-hint").textContent = `${video ? "Tap to watch, + puts it in " : "+ puts it in "}${DOCS[SCR.doc].name}`;
+    if (v === "markers") {
+      renderMarkers();
+    } else {
+      scriptStatus();
+      scriptCaret();
+    }
   }
 
-  function scriptReady(on) {
-    SCR.loaded = on;
-    scriptBox.readOnly = !on;
+  function scriptReady(d, on) {
+    SCR.docs[d].loaded = on;
+    DOCS[d].box.readOnly = !on;
   }
 
   // From the region's start if it has one, else a couple of seconds before.
@@ -3596,94 +3619,125 @@
   }
 
   function addToScript(m) {
-    if (insertScript(scriptLine(m) + "\n")) toast("Added to the script", { label: "Show", run: () => setView("script") });
+    const d = SCR.doc;
+    if (addMarkerTo(d, m)) toast(`Added to ${DOCS[d].name}`, { label: "Show", run: () => setView(d) });
   }
 
-  function scriptStatus(text) {
-    if (text != null) {
-      $("#script-status").textContent = text;
+  function scriptStatus() {
+    const d = SCR.doc;
+    const st = SCR.docs[d];
+    if (st.note) {
+      $("#script-status").textContent = st.note;
       return;
     }
-    const words = scriptBox.value.trim() ? scriptBox.value.trim().split(/\s+/).length : 0;
-    $("#script-status").textContent = `${words} word${words === 1 ? "" : "s"}` + (SCR.dirty ? " · editing" : "");
+    const v = docBox(d).value.trim();
+    const words = plural(v ? v.split(/\s+/).length : 0, "word");
+    const beats = d === "beats" ? `${plural(beatCount(parseBeats(v)), "beat")} · ` : "";
+    $("#script-status").textContent = beats + words + (st.dirty ? " · editing" : "");
   }
 
   async function loadScript() {
     const c = S.clip;
-    if (!c || SCR.loading) return;
+    if (!c) return;
     if (SCR.clipId !== c.id) {
-      Object.assign(SCR, { clipId: c.id, rev: null, dirty: false });
-      scriptReady(false);
-      scriptBox.value = "";
-      scriptStatus("Loading the script");
+      SCR.clipId = c.id;
+      for (const d of Object.keys(DOCS)) {
+        clearTimeout(SCR.docs[d].timer);
+        Object.assign(SCR.docs[d], docState(), { note: `Loading ${DOCS[d].name}` });
+        scriptReady(d, false);
+        DOCS[d].box.value = "";
+      }
+      scriptStatus();
       scriptCaret();
     }
-    const path = scriptPath();
-    const pending = outbox.ops.filter((o) => o.kind === "put" && o.path.toLowerCase() === path.toLowerCase()).pop();
-    if (pending && !SCR.dirty && document.activeElement !== scriptBox) {
-      if (scriptBox.value !== pending.text) scriptBox.value = pending.text;
-      scriptReady(true);
+    await Promise.all(Object.keys(DOCS).map((d) => loadDoc(c, d)));
+  }
+
+  function docLoaded(d) {
+    SCR.docs[d].note = "";
+    scriptReady(d, true);
+    if (d === SCR.doc) {
       scriptStatus();
+      scriptCaret();
+    }
+  }
+
+  async function loadDoc(c, d) {
+    const st = SCR.docs[d];
+    const box = DOCS[d].box;
+    // Not under your fingers: typing (or about to save) wins.
+    if (st.loading || (st.loaded && (st.dirty || document.activeElement === box))) return;
+    const path = docPath(d);
+    const pending = outbox.ops.filter((o) => o.kind === "put" && o.path.toLowerCase() === path.toLowerCase()).pop();
+    if (pending && !st.dirty && document.activeElement !== box) {
+      if (box.value !== pending.text) box.value = pending.text;
+      docLoaded(d);
       return;
     }
-    SCR.loading = true;
+    st.loading = true;
     try {
       const meta = await dbx.meta(path);
       if (S.clip !== c || SCR.clipId !== c.id) return;
-      if (!meta || meta.rev === SCR.rev) {
-        scriptReady(true);
-        scriptStatus();
+      if (!meta || meta.rev === st.rev) {
+        docLoaded(d);
         return;
       }
       const text = await readText(meta);
       if (S.clip !== c) return;
-      // Not under your fingers: typing (or about to save) wins.
-      if (SCR.dirty || (document.activeElement === scriptBox && scriptBox.value !== text && SCR.rev)) return;
-      SCR.rev = meta.rev;
-      if (scriptBox.value !== text) scriptBox.value = text;
-      scriptReady(true);
-      scriptStatus();
-      scriptCaret();
+      if (st.dirty || (document.activeElement === box && box.value !== text && st.rev)) return;
+      st.rev = meta.rev;
+      if (box.value !== text) box.value = text;
+      docLoaded(d);
     } catch (e) {
       if (e instanceof AuthError) return needSignIn();
-      scriptStatus(`Couldn't load the script. ${errText(e)}`);
+      st.note = `Couldn't load ${DOCS[d].name}. ${errText(e)}`;
+      if (d === SCR.doc) scriptStatus();
     } finally {
-      SCR.loading = false;
+      st.loading = false;
     }
   }
 
-  function saveScript() {
-    clearTimeout(SCR.timer);
-    if (!SCR.dirty || !S.clip || SCR.clipId !== S.clip.id) return;
-    SCR.dirty = false;
-    outbox.put(scriptPath(), scriptBox.value);
-    scriptStatus();
+  function saveDoc(d) {
+    const st = SCR.docs[d];
+    clearTimeout(st.timer);
+    if (!st.dirty || !S.clip || SCR.clipId !== S.clip.id) return;
+    st.dirty = false;
+    outbox.put(docPath(d), DOCS[d].box.value);
+    if (d === SCR.doc) scriptStatus();
   }
 
-  scriptBox.addEventListener("input", () => {
-    SCR.dirty = true;
-    clearTimeout(SCR.timer);
-    SCR.timer = setTimeout(saveScript, 1000);
-    scriptStatus();
-    scriptCaret();
-  });
+  function saveScript() {
+    for (const d of Object.keys(DOCS)) saveDoc(d);
+  }
+
   // Typing: the waveforms and buttons step aside (the video stays) and the
-  // screen fits above the keyboard, so the script gets the room. Back on blur.
+  // screen fits above the keyboard, so the doc gets the room. Back on blur.
   function fitViewport() {
     const vv = window.visualViewport;
     document.documentElement.style.setProperty("--vvh", `${Math.round(vv ? vv.height : window.innerHeight)}px`);
     if ($("#screen-script").classList.contains("writing")) window.scrollTo(0, 0);
   }
   if (window.visualViewport) window.visualViewport.addEventListener("resize", fitViewport);
-  scriptBox.addEventListener("focus", () => {
-    fitViewport();
-    $("#screen-script").classList.add("writing");
-  });
-  scriptBox.addEventListener("blur", () => {
-    saveScript();
-    $("#screen-script").classList.remove("writing");
-  });
-  for (const n of ["click", "keyup", "select"]) scriptBox.addEventListener(n, scriptCaret);
+  for (const d of Object.keys(DOCS)) {
+    const box = DOCS[d].box;
+    box.addEventListener("input", () => {
+      const st = SCR.docs[d];
+      st.dirty = true;
+      clearTimeout(st.timer);
+      st.timer = setTimeout(() => saveDoc(d), 1000);
+      scriptStatus();
+      scriptCaret();
+    });
+    box.addEventListener("focus", () => {
+      fitViewport();
+      $("#screen-script").classList.add("writing");
+    });
+    box.addEventListener("blur", () => {
+      saveDoc(d);
+      $("#screen-script").classList.remove("writing");
+    });
+    for (const n of ["click", "keyup", "select"]) box.addEventListener(n, scriptCaret);
+  }
 
   function scriptLine(m) {
     const r = mRegion(m);
@@ -3692,25 +3746,144 @@
     return `[${when}] ${m.note || "(no note)"}${sfx ? ` (${sfx})` : ""}`;
   }
 
+  function typeInto(box, text, a, b) {
+    box.setRangeText(text, a, b, "end");
+    box.dispatchEvent(new Event("input"));
+  }
+
+  // The line pos is on, as [start, end) in the text.
+  function lineAt(v, pos) {
+    const a = v.lastIndexOf("\n", pos - 1) + 1;
+    const b = v.indexOf("\n", pos);
+    return [a, b < 0 ? v.length : b];
+  }
+
+  function docReady(d) {
+    if (SCR.docs[d].loaded) return true;
+    const name = DOCS[d].name;
+    toast(`${name[0].toUpperCase()}${name.slice(1)} is still loading.`);
+    return false;
+  }
+
   // Whole lines: with the cursor partway along a line they go after that
   // line, never into the middle of it.
-  function insertScript(text) {
-    if (!SCR.loaded) {
-      toast("The script is still loading.");
-      return false;
-    }
-    const v = scriptBox.value;
-    let a = scriptBox.selectionStart ?? v.length;
-    let b = scriptBox.selectionEnd ?? a;
+  function insertScript(text, d = SCR.doc) {
+    if (!docReady(d)) return false;
+    const box = DOCS[d].box;
+    const v = box.value;
+    let a = box.selectionStart ?? v.length;
+    let b = box.selectionEnd ?? a;
     if (a === b && a > 0 && v[a - 1] !== "\n") {
       const eol = v.indexOf("\n", a);
       a = b = eol < 0 ? v.length : eol;
       text = "\n" + text.replace(/\n$/, "");
     }
-    scriptBox.setRangeText(text, a, b, "end");
-    scriptBox.dispatchEvent(new Event("input"));
+    typeInto(box, text, a, b);
     return true;
   }
+
+  /* In the Therefore / But, a marker fills the cursor's line when it's an
+     empty "Therefore:" or "But:" (lay out the beat, then point it at the
+     moment); anywhere else it's a line of its own. */
+  function addMarkerTo(d, m) {
+    if (!docReady(d)) return false;
+    if (d === "beats") {
+      const box = DOCS[d].box;
+      const v = box.value;
+      const [a, b] = lineAt(v, box.selectionStart ?? v.length);
+      const line = v.slice(a, b);
+      const hit = BEAT_RE.exec(line);
+      if (hit && (box.selectionEnd ?? b) <= b && !line.slice(hit[0].length).trim()) {
+        typeInto(box, (/\s$/.test(line) ? "" : " ") + scriptLine(m), b, b);
+        return true;
+      }
+    }
+    return insertScript(scriptLine(m) + "\n", d);
+  }
+
+  /* ---------- Therefore / But ----------
+     Same rules as the clip editor's: beats are blocks of lines, a blank line
+     or a new "Therefore:" starts the next one. */
+  const BEAT_RE = /^(\s*)(therefore|but)\s*:\s*/i;
+
+  function parseBeats(text) {
+    const beats = [];
+    let cur = null;
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (!line) {
+        cur = null;
+        continue;
+      }
+      const hit = BEAT_RE.exec(line);
+      const kind = hit ? hit[2].toLowerCase() : "text";
+      if (!cur || kind === "therefore") {
+        cur = { kinds: [], lines: [] };
+        beats.push(cur);
+      }
+      cur.kinds.push(kind);
+      cur.lines.push(line);
+    }
+    return beats.map((b) => ({ ...b, text: b.lines.join("\n") }));
+  }
+
+  const beatCount = (beats) => beats.filter((b) => b.kinds.some((k) => k !== "text")).length;
+
+  /* Enter after a Therefore line starts its But (or goes to it, if it's
+     there), Enter after a But starts the next beat, Enter on an empty
+     Therefore / But clears it. Text after the cursor: a plain Enter. */
+  DOCS.beats.box.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+    const box = DOCS.beats.box;
+    const v = box.value;
+    const pos = box.selectionStart;
+    if (pos !== box.selectionEnd) return;
+    const [a, b] = lineAt(v, pos);
+    if (v.slice(pos, b).trim()) return;
+    const line = v.slice(a, pos);
+    const hit = BEAT_RE.exec(line);
+    if (!hit) return;
+    e.preventDefault();
+    if (!line.slice(hit[0].length).trim()) {
+      typeInto(box, "", a, b);
+      return;
+    }
+    if (hit[2].toLowerCase() === "but") {
+      typeInto(box, "\n\nTherefore: ", pos, pos);
+      return;
+    }
+    const butEnd = b < v.length ? lineAt(v, b + 1)[1] : -1;
+    if (butEnd >= 0 && /^\s*but\s*:/i.test(v.slice(b + 1, butEnd))) {
+      box.setSelectionRange(butEnd, butEnd);
+      scriptCaret();
+      return;
+    }
+    typeInto(box, "\nBut: ", pos, pos);
+  });
+
+  // + Beat: a new empty pair after the beat the cursor is in, the cursor on
+  // its Therefore.
+  $("#sc-beat").addEventListener("click", () => {
+    if (!docReady("beats")) return;
+    const box = DOCS.beats.box;
+    const v = box.value;
+    let end = lineAt(v, box.selectionEnd ?? v.length)[1];
+    while (end < v.length) {
+      const nextEnd = lineAt(v, end + 1)[1];
+      const next = v.slice(end + 1, nextEnd);
+      if (!next.trim() || /^\s*therefore\s*:/i.test(next)) break;
+      end = nextEnd;
+    }
+    const before = v.slice(0, end);
+    const after = v.slice(end);
+    const lead = !before.trim() ? "" : before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
+    const tail = !after.trim() || after.startsWith("\n\n") ? "" : "\n";
+    box.focus();
+    typeInto(box, `${lead}Therefore: \nBut: ${tail}`, end, end);
+    const at = end + lead.length + "Therefore: ".length;
+    box.setSelectionRange(at, at);
+    scriptCaret();
+  });
 
   $("#sc-insert").addEventListener("click", () => {
     const t = now();
@@ -3720,24 +3893,24 @@
       toast("No markers on this clip yet.");
       return;
     }
-    insertScript(scriptLine(best) + "\n");
+    addMarkerTo(SCR.doc, best);
   });
+  // The script's Outline: every beat of the Therefore / But.
   $("#sc-outline").addEventListener("click", () => {
-    const list = S.markers.filter(passesFilter);
-    if (!list.length) {
-      toast("No markers to outline.");
+    if (!docReady("beats")) return;
+    const beats = parseBeats(DOCS.beats.box.value);
+    if (!beats.length) {
+      toast("No Therefore / But yet. Write it first, from the markers.", { label: "Open", run: () => setView("beats") });
       return;
     }
-    insertScript(list.map((m) => `- ${scriptLine(m)}`).join("\n") + "\n");
+    insertScript(beats.map((b) => b.text).join("\n\n") + "\n", "script");
   });
 
   // Go to: the first [time] on the line the cursor is on.
   function caretTime() {
-    const v = scriptBox.value;
-    const pos = scriptBox.selectionStart || 0;
-    const a = v.lastIndexOf("\n", pos - 1) + 1;
-    let b = v.indexOf("\n", pos);
-    if (b < 0) b = v.length;
+    const box = docBox();
+    const v = box.value;
+    const [a, b] = lineAt(v, box.selectionStart || 0);
     const hit = /\[(\d{1,2}(?::\d{2}){1,2}(?:\.\d+)?)/.exec(v.slice(a, b));
     if (!hit) return null;
     return hit[1].split(":").reduce((acc, p) => acc * 60 + Number(p), 0);
@@ -3753,10 +3926,11 @@
     const t = caretTime();
     if (t != null) seekClip(t);
   });
-  // The script's buttons leave the typing where it is (focus, keyboard, layout).
+  // The doc's buttons leave the typing where it is (focus, keyboard, layout).
   for (const b of $$(".script-tools button")) b.addEventListener("mousedown", (e) => e.preventDefault());
-  $("#tab-markers").addEventListener("click", () => setView("markers"));
+  $("#tab-beats").addEventListener("click", () => setView("beats"));
   $("#tab-script").addEventListener("click", () => setView("script"));
+  $("#tab-markers").addEventListener("click", () => setView("markers"));
 
   for (const b of $$(".sheet-backdrop")) {
     b.addEventListener("click", () => {

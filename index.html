@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=202610091810">
+<link rel="stylesheet" href="style.css?v=202610100345">
 <title>Marker Sync</title>
 </head>
 <body>
@@ -163,7 +163,8 @@
   </div>
 </section>
 
-<!-- Script workspace: the clip's script.md, with its markers a tap away -->
+<!-- Script workspace: the clip's Therefore / But (therefore-but.md) and script
+     (script.md), with its markers a tap away -->
 <section id="screen-script" class="screen clip-screen script-screen" hidden>
   <header class="bar">
     <button id="script-back" class="btn btn-ghost bar-back" type="button">Clips</button>
@@ -179,19 +180,23 @@
       <button class="btn btn-key" type="button" data-skip="10">+10</button>
     </div>
     <p id="sv-novideo" class="muted small sv-novideo" hidden></p>
-    <div class="seg seg-wide sv-switch" role="tablist" aria-label="Script or markers">
+    <div class="seg seg-wide sv-switch" role="tablist" aria-label="Therefore / But, script or markers">
+      <button id="tab-beats" type="button" role="tab" aria-selected="false" aria-pressed="false">Therefore / But</button>
       <button id="tab-script" type="button" role="tab" aria-selected="true" aria-pressed="true">Script</button>
       <button id="tab-markers" type="button" role="tab" aria-selected="false" aria-pressed="false">Markers <span id="sv-count" class="marker-count"></span></button>
     </div>
   </div>
   <div id="script-view" class="script-view">
     <div class="script-tools">
+      <button id="sc-beat" class="btn btn-small" type="button" hidden>+ Beat</button>
       <button id="sc-insert" class="btn btn-small" type="button">+ Nearest marker</button>
-      <button id="sc-outline" class="btn btn-small" type="button">Outline</button>
+      <button id="sc-outline" class="btn btn-small" type="button">Outline beats</button>
       <button id="sc-goto" class="btn btn-small" type="button" disabled>Go to</button>
     </div>
+    <textarea id="beats-text" class="script-text" autocapitalize="sentences" hidden
+              placeholder="Therefore: what happens because of the last thing&#10;But: what goes wrong&#10;&#10;Enter after a Therefore starts its But, Enter after a But starts the next Therefore. + Nearest marker fills an empty line."></textarea>
     <textarea id="script-text" class="script-text" autocapitalize="sentences"
-              placeholder="Write the script here. Outline drops in every marker; in Markers, + adds one at a time."></textarea>
+              placeholder="Write the script here, from your Therefore / But. Outline beats drops them all in; in Markers, + adds one at a time."></textarea>
     <p id="script-status" class="muted small script-status"></p>
   </div>
   <div id="sv-markers-view" class="markers-wrap sv-markers" hidden>
@@ -433,9 +438,9 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js?v=202610091810"></script>
+<script src="config.js?v=202610100345"></script>
 <script src="https://player.twitch.tv/js/embed/v1.js"></script>
-<script src="app.js?v=202610091810"></script>
-<script src="edit.js?v=202610091810"></script>
+<script src="app.js?v=202610100345"></script>
+<script src="edit.js?v=202610100345"></script>
 </body>
 </html>

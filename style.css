@@ -468,13 +468,16 @@ code, .mono { font-family: var(--mono); }
 .ed-clip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 15px; min-height: 36px; }
 .ed-clip .mono { font-weight: 600; margin-right: auto; }
 
-/* Script workspace: the video, a Script / Markers switch, and the script. */
+/* Script workspace: the video, a Therefore / But · Script · Markers switch,
+   and the doc being written. */
 .script-top { flex: none; }
 .sv-transport { display: grid; grid-template-columns: 1.3fr 1fr 1.3fr 1fr; align-items: center; gap: 8px; padding: 8px 12px 0; }
 .sv-transport .t-now { font-size: 17px; }
 .sv-novideo { margin: 0; padding: 10px 16px 0; }
 .sv-switch { display: flex; width: auto; margin: 10px 12px 8px; }
-.sv-switch button { min-height: 40px; font-size: 15px; }
+.sv-switch button { min-height: 40px; font-size: 15px; white-space: nowrap; padding: 0 6px; }
+/* Three tabs on a phone's width: the long one gets the room it needs. */
+.sv-switch #tab-beats { flex: 1.45; }
 .sv-switch .marker-count { margin-left: 4px; }
 .sv-hint { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; text-transform: none; }
 .sv-add { font-size: 24px; font-weight: 500; }
