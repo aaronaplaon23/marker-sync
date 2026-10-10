@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://player.twitch.tv; frame-src https://player.twitch.tv https://embed.twitch.tv; style-src 'self'; img-src 'self' data:; media-src https://*.cloudfront.net https://*.twitch.tv https://*.ttvnw.net; connect-src https://api.dropboxapi.com https://content.dropboxapi.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://player.twitch.tv; frame-src https://player.twitch.tv https://embed.twitch.tv; style-src 'self'; img-src 'self' data: blob:; media-src https://*.cloudfront.net https://*.twitch.tv https://*.ttvnw.net https://*.dropboxusercontent.com; connect-src https://api.dropboxapi.com https://content.dropboxapi.com https://*.dropboxusercontent.com; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="theme-color" content="#0d1117">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=202610072035">
+<link rel="stylesheet" href="style.css?v=202610091751">
 <title>Marker Sync</title>
 </head>
 <body>
@@ -67,6 +67,14 @@
       <span class="tool-text">
         <span class="tool-name">Script</span>
         <span class="tool-desc">Write a clip's script from its markers.</span>
+      </span>
+      <span class="tool-go" aria-hidden="true">&rsaquo;</span>
+    </button>
+    <button id="home-edit" class="tool-card" type="button">
+      <span class="tool-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M10 9.5l4 2.5-4 2.5z"/></svg></span>
+      <span class="tool-text">
+        <span class="tool-name">Edit</span>
+        <span class="tool-desc">Make a clip vertical. The PC exports it to TikTok Finals.</span>
       </span>
       <span class="tool-go" aria-hidden="true">&rsaquo;</span>
     </button>
@@ -196,6 +204,132 @@
   </div>
 </section>
 
+<!-- Edit: the clips waiting in the PC's Stage 1 folder (the clip editor's 2 Â· Edit list) -->
+<section id="screen-vlist" class="screen" hidden>
+  <header class="bar">
+    <button id="vl-home" class="btn btn-ghost bar-back" type="button">Home</button>
+    <h1 class="bar-title">Edit</h1>
+    <div class="bar-actions">
+      <button id="vl-refresh" class="btn btn-ghost" type="button">Refresh</button>
+    </div>
+  </header>
+  <div id="vl-banner" class="banner" hidden></div>
+  <div id="vl-jobs" class="vl-jobs" hidden></div>
+  <div id="vl-list" class="vl-list"></div>
+  <div id="vl-empty" class="empty-state" hidden>
+    <p class="empty-title">No clips to edit</p>
+    <p class="muted">Clips you cut into the PC's Stage 1 folder show up here, the same ones as the clip editor's <b>2 Â· Edit</b> tab.</p>
+  </div>
+  <footer class="clips-foot">
+    <span id="vl-pc" class="pc-status"></span>
+    <span id="vl-sync" class="sync" hidden></span>
+  </footer>
+</section>
+
+<!-- Edit workspace: one clip, made vertical -->
+<section id="screen-vedit" class="screen ve-screen" hidden>
+  <header class="bar">
+    <button id="ve-back" class="btn btn-ghost bar-back" type="button">Clips</button>
+    <h1 id="ve-title" class="bar-title bar-title-small"></h1>
+    <span id="ve-sync" class="sync"></span>
+  </header>
+  <div id="ve-stage" class="ve-stage">
+    <div id="ve-src" class="ve-frame">
+      <video id="ve-video" playsinline muted preload="auto" crossorigin="anonymous"></video>
+      <div id="ve-crops" class="ve-layer"></div>
+    </div>
+    <div id="ve-cover" class="ve-cover"></div>
+    <div id="ve-out" class="ve-frame ve-out">
+      <canvas id="ve-canvas"></canvas>
+      <div id="ve-guides" class="ve-layer ve-guides"></div>
+      <div id="ve-outboxes" class="ve-layer"></div>
+    </div>
+    <div class="seg ve-view" role="group" aria-label="What the video area shows">
+      <button type="button" data-view="out" aria-pressed="true">Preview</button>
+      <button type="button" data-view="src" aria-pressed="false">Crop</button>
+    </div>
+    <div id="ve-msg" class="video-msg" hidden></div>
+  </div>
+  <div class="ve-transport">
+    <div class="ve-times">
+      <span id="ve-now" class="mono ve-now">0:00.0</span>
+      <span id="ve-trim" class="mono ve-trim"></span>
+      <div class="zoomer ve-zoom" role="group" aria-label="Timeline zoom">
+        <button type="button" data-vzoom="-1" aria-label="Zoom out">&minus;</button>
+        <span id="ve-zoom-label" class="zoom-label">All</span>
+        <button type="button" data-vzoom="1" aria-label="Zoom in">+</button>
+      </div>
+      <button id="ve-loop" class="ve-chip" type="button" aria-pressed="true">Loop</button>
+    </div>
+    <div class="ve-keys">
+      <button id="ve-in" class="btn btn-key" type="button" aria-label="Set the in point here">In</button>
+      <button id="ve-back1" class="btn btn-key" type="button" aria-label="Back one frame">&lsaquo;</button>
+      <button id="ve-play" class="btn btn-key btn-play" type="button">Play</button>
+      <button id="ve-fwd1" class="btn btn-key" type="button" aria-label="Forward one frame">&rsaquo;</button>
+      <button id="ve-outpt" class="btn btn-key" type="button" aria-label="Set the out point here">Out</button>
+    </div>
+  </div>
+  <div class="ve-tl">
+    <canvas id="ve-timeline" class="ve-timeline" aria-label="The clip. Drag to scrub, drag the handles to trim."></canvas>
+    <div id="ve-playhead" class="ve-playhead"></div>
+  </div>
+  <div id="ve-panel" class="ve-panel">
+    <div class="ve-pane" data-pane="look">
+      <div id="ve-layouts" class="seg seg-wide" role="group" aria-label="Layout">
+        <button type="button" data-layout="landscape">Landscape</button>
+        <button type="button" data-layout="portrait">Portrait</button>
+        <button type="button" data-layout="stacked">Stacked</button>
+      </div>
+      <div id="ve-portrait" class="ve-rows">
+        <label class="ve-switch"><input type="checkbox" id="ve-blur" checked><span>Blur background</span></label>
+        <label class="ve-switch"><input type="checkbox" id="ve-facecam"><span>Facecam overlay</span></label>
+        <label class="ve-slider"><span>Main size</span><input type="range" id="ve-main" min="100" max="300" value="100"><span id="ve-main-val" class="mono">100%</span></label>
+        <label class="ve-switch"><input type="checkbox" id="ve-45"><span>4:5 instead of 9:16 (1080x1350)</span></label>
+      </div>
+      <label id="ve-stacked" class="ve-slider"><span>Facecam height</span><input type="range" id="ve-divider" min="20" max="55" value="35"><span id="ve-divider-val" class="mono">35%</span></label>
+      <div class="ve-row">
+        <span class="muted small">Guides</span>
+        <div id="ve-guide-seg" class="seg" role="group" aria-label="Framing guides">
+          <button type="button" data-guide="">Off</button>
+          <button type="button" data-guide="4:5">4:5</button>
+          <button type="button" data-guide="1:1">1:1</button>
+          <button type="button" data-guide="16:9">16:9</button>
+          <button type="button" data-guide="all">All</button>
+        </div>
+      </div>
+      <label class="ve-switch"><input type="checkbox" id="ve-wm"><span>Twitch watermark <span id="ve-wm-note" class="muted small"></span></span></label>
+      <label id="ve-wm-size" class="ve-slider"><span>Watermark size</span><input type="range" id="ve-wm-scale" min="10" max="100" value="100"><span id="ve-wm-val" class="mono">100%</span></label>
+      <p id="ve-look-note" class="muted small"></p>
+    </div>
+    <div class="ve-pane" data-pane="audio" hidden>
+      <p class="muted small">Mute and volume go into the export. Wave puts a track's waveform on the timeline.</p>
+      <ul id="ve-tracks" class="ve-tracks"></ul>
+      <p id="ve-audio-note" class="muted small"></p>
+    </div>
+    <div class="ve-pane" data-pane="presets" hidden>
+      <p class="muted small">The same presets as the clip editor on the PC. A preset is the whole look: layout, crops and audio.</p>
+      <ul id="ve-presets" class="ve-presets"></ul>
+      <button id="ve-preset-save" class="btn btn-block" type="button">Save this look as a preset</button>
+      <p id="ve-preset-note" class="muted small"></p>
+    </div>
+    <div class="ve-pane" data-pane="export" hidden>
+      <div id="ve-summary" class="ve-summary"></div>
+      <label class="muted small" for="ve-name">Name</label>
+      <input id="ve-name" class="input" type="text" autocapitalize="sentences" autocorrect="off" spellcheck="false" maxlength="80" enterkeyhint="done">
+      <p id="ve-path" class="muted small ve-path"></p>
+      <button id="ve-export" class="btn btn-primary btn-block" type="button">Export</button>
+      <ul id="ve-jobs" class="ve-jobs"></ul>
+      <button id="ve-next" class="btn btn-block" type="button" hidden>Next clip</button>
+    </div>
+  </div>
+  <nav class="ve-tabs" role="tablist" aria-label="Edit tools">
+    <button type="button" role="tab" data-tab="look">Look</button>
+    <button type="button" role="tab" data-tab="audio">Audio</button>
+    <button type="button" role="tab" data-tab="presets">Presets</button>
+    <button type="button" role="tab" data-tab="export">Export</button>
+  </nav>
+</section>
+
 <!-- Marker editor -->
 <div id="sheet-editor" class="sheet" hidden>
   <div class="sheet-backdrop" data-close="editor"></div>
@@ -299,8 +433,9 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js?v=202610072035"></script>
+<script src="config.js?v=202610091751"></script>
 <script src="https://player.twitch.tv/js/embed/v1.js"></script>
-<script src="app.js?v=202610072035"></script>
+<script src="app.js?v=202610091751"></script>
+<script src="edit.js?v=202610091751"></script>
 </body>
 </html>

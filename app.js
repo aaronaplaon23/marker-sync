@@ -349,18 +349,20 @@
       cls = "saving";
       text = "Saving";
     }
-    for (const id of ["#clip-sync", "#clips-sync", "#script-sync", "#home-sync"]) {
+    for (const id of ["#clip-sync", "#clips-sync", "#script-sync", "#home-sync", "#vl-sync", "#ve-sync"]) {
       const s = $(id);
       s.className = cls ? `sync ${cls}` : "sync";
       s.textContent = text;
     }
     $("#clips-sync").hidden = !n;
     $("#home-sync").hidden = !n;
+    $("#vl-sync").hidden = !n;
   }
 
   /* ---------- screens, toast ---------- */
 
-  const SCREENS = ["#screen-setup", "#screen-connect", "#screen-home", "#screen-clips", "#screen-clip", "#screen-script"];
+  const SCREENS = ["#screen-setup", "#screen-connect", "#screen-home", "#screen-clips", "#screen-clip", "#screen-script",
+    "#screen-vlist", "#screen-vedit"];
   let current = null;
   function show(id) {
     for (const s of SCREENS) $(s).hidden = s !== id;
@@ -951,6 +953,7 @@
     tagsLoaded = false;
     clips = [];
     clipsLoaded = false;
+    if (window.MSEDIT) window.MSEDIT.reset();
     showConnect();
   });
 
@@ -3780,6 +3783,13 @@
     if (current === "#screen-clip" || current === "#screen-script") syncOpenClip();
   });
   window.addEventListener("pagehide", saveScript);
+
+  // The Edit screens (edit.js) share the sign-in, the outbox and the screens.
+  window.MSAPP = {
+    $, $$, el, button, clamp, sleep, fmtTime, stripExt, parseJson, store, dbx, outbox, toast, show, errText,
+    AuthError, NetError, ApiError, notFound, needSignIn, swallowClick, renderSync, showHome,
+    current: () => current, debug: !!CFG.debug,
+  };
 
   function init() {
     if (CFG.debug) {   // automated tests only

@@ -659,3 +659,165 @@ code, .mono { font-family: var(--mono); }
 .btn-filter.on { background: var(--marker-lo); color: var(--marker); }
 .mrow-tags { flex: none; max-width: 48%; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .state-none { color: var(--t2); }
+
+/* --- Edit: the clip list ----------------------------------------------- */
+
+#home-edit .tool-icon { background: rgba(63, 185, 80, 0.14); color: var(--green); }
+.vl-head {
+  padding: 14px 16px 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--t2);
+}
+.vl-clips { padding-top: 8px; }
+.vl-done .clip-name { color: var(--t2); }
+.vl-jobs .ve-jobs { margin: 8px 16px 0; }
+.pc-status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--t2); }
+.pc-status::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--t3); }
+.pc-status.pc-on::before { background: var(--green); }
+.pc-status.pc-wait::before { background: var(--marker); }
+.pc-status.pc-off::before { background: var(--red); }
+
+/* --- Edit: the workspace ----------------------------------------------- */
+
+.ve-screen { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+.ve-stage { position: relative; flex: 1 1 auto; min-height: 150px; background: #000; overflow: hidden; touch-action: none; }
+.ve-frame { position: absolute; }
+/* Each layer its own stack, so the crop boxes (raised inside the source) stay under the cover. */
+#ve-src { z-index: 0; }
+.ve-cover { z-index: 1; }
+.ve-out { z-index: 2; }
+#ve-src video { display: block; width: 100%; height: 100%; object-fit: fill; background: #000; }
+.ve-layer { position: absolute; inset: 0; }
+.ve-cover { position: absolute; inset: 0; background: #000; }
+.ve-out { background: #000; }
+.ve-out canvas { display: block; width: 100%; height: 100%; }
+.ve-out.ve-inset { border: 1px solid var(--border-hi); border-radius: 6px; overflow: hidden; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.6); }
+.ve-out.ve-inset .ve-layer { display: none; }
+/* The small preview never takes a touch (a crop handle may sit under it), and fades while a box moves. */
+.ve-out.ve-inset { pointer-events: none; transition: opacity 0.12s; }
+.ve-stage.dragging .ve-out.ve-inset { opacity: 0.25; }
+.ve-view { position: absolute; top: 8px; right: 8px; z-index: 3; background: rgba(13, 17, 23, 0.82); }   /* the facecam usually sits top left */
+.ve-view button { min-height: 34px; font-size: 13px; }
+.ve-stage .video-msg { z-index: 4; }
+
+.crop-box { position: absolute; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45); touch-action: none; }
+.crop-box.top, .crop-box.bottom { box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.25); }
+.crop-box.top { border-color: #ffd166; }
+.crop-box.bottom { border-color: #4cc2ff; }
+.crop-box .tag {
+  position: absolute; top: -1px; left: -1px; padding: 1px 5px; border-radius: 0 0 4px 0;
+  background: var(--accent); color: var(--accent-ink); font-size: 9px; font-weight: 800; letter-spacing: 0.5px; pointer-events: none;
+}
+.crop-box.top .tag { background: #ffd166; color: #000; }
+.crop-box.bottom .tag { background: #4cc2ff; color: #000; }
+.crop-box .grip { position: absolute; width: 16px; height: 16px; border-radius: 4px; background: var(--accent); touch-action: none; }
+/* Finger-sized targets that reach outward, so a small box can still be dragged by its middle. */
+.crop-box .grip::before, .out-box .grip::before { content: ""; position: absolute; }
+.crop-box .grip.nw::before { top: -14px; left: -14px; right: -3px; bottom: -3px; }
+.crop-box .grip.ne::before { top: -14px; right: -14px; left: -3px; bottom: -3px; }
+.crop-box .grip.sw::before { bottom: -14px; left: -14px; right: -3px; top: -3px; }
+.crop-box .grip.se::before, .out-box .grip::before { bottom: -14px; right: -14px; left: -3px; top: -3px; }
+/* The facecam box over the gameplay one, and every grip over every box. */
+.crop-box.top { z-index: 2; }
+.crop-box .grip { z-index: 3; }
+.crop-box.top .grip { background: #ffd166; }
+.crop-box.bottom .grip { background: #4cc2ff; }
+.crop-box .grip.nw { top: -8px; left: -8px; }
+.crop-box .grip.ne { top: -8px; right: -8px; }
+.crop-box .grip.sw { bottom: -8px; left: -8px; }
+.crop-box .grip.se { bottom: -8px; right: -8px; }
+
+.out-box { position: absolute; border: 2px solid var(--green); border-radius: 3px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55); touch-action: none; }
+.out-box.wm { border-color: #ffd166; border-style: dashed; }
+.out-box .tag {
+  position: absolute; top: 2px; left: 2px; padding: 1px 4px; border-radius: 3px; background: rgba(0, 0, 0, 0.65);
+  color: var(--green); font-size: 9px; font-weight: 800; letter-spacing: 0.6px; white-space: nowrap; pointer-events: none;
+}
+.out-box.wm .tag { color: #ffd166; top: auto; bottom: 2px; }
+.out-box .grip { position: absolute; right: -9px; bottom: -9px; width: 18px; height: 18px; border-radius: 4px; background: var(--green); }
+.out-box.wm .grip { background: #ffd166; }
+.ve-guides { pointer-events: none; }
+.guide-box { position: absolute; border: 1px dashed rgba(255, 255, 255, 0.75); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(0, 0, 0, 0.5); }
+.guide-box span { position: absolute; top: 2px; left: 3px; padding: 0 4px; border-radius: 3px; background: rgba(0, 0, 0, 0.6);
+  color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 0.6px; line-height: 1.5; }
+
+.ve-transport { flex: none; padding: 6px 12px 4px; }
+.ve-times { display: flex; align-items: center; gap: 10px; padding: 0 2px 6px; }
+.ve-now { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ve-trim { flex: 1; min-width: 0; text-align: center; font-size: 12px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ve-chip {
+  flex: none; min-height: 32px; padding: 0 10px; border: 1px solid var(--border-hi); border-radius: 16px;
+  background: transparent; color: var(--t2); font-size: 13px; font-weight: 700;
+}
+.ve-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-lo); color: var(--accent); }
+.ve-keys { display: grid; grid-template-columns: 1fr 0.8fr 1.4fr 0.8fr 1fr; gap: 8px; }
+.ve-keys .btn-key { min-height: 44px; font-size: 16px; }
+#ve-back1, #ve-fwd1 { font-size: 26px; line-height: 1; }
+
+.ve-tl { position: relative; flex: none; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.ve-timeline { display: block; width: 100%; height: 44px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.ve-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; margin-left: -1px; background: #fff; pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4); }
+.ve-zoom { flex: none; }
+.ve-zoom button { min-height: 32px; width: 30px; font-size: 19px; }
+.ve-zoom .zoom-label { min-width: 32px; font-size: 12px; }
+
+.ve-panel { flex: 0 1 auto; max-height: 36vh; overflow-y: auto; -webkit-overflow-scrolling: touch; border-bottom: 1px solid var(--border); }
+.ve-pane { display: grid; gap: 12px; padding: 12px 14px 14px; }
+.ve-rows { display: grid; gap: 10px; }
+.ve-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ve-row .seg button { min-width: 0; padding: 0 9px; }
+.ve-slider { display: grid; grid-template-columns: auto 1fr 46px; align-items: center; gap: 10px; font-size: 15px; }
+.ve-slider input { width: 100%; min-width: 0; height: 30px; margin: 0; accent-color: var(--accent); }
+.ve-slider .mono { font-size: 13px; color: var(--t2); text-align: right; }
+.ve-switch { display: flex; align-items: center; gap: 12px; min-height: 36px; font-size: 15px; cursor: pointer; }
+.ve-switch input {
+  flex: none; position: relative; width: 44px; height: 26px; margin: 0; border-radius: 13px;
+  background: var(--border-hi); -webkit-appearance: none; appearance: none; transition: background 0.15s;
+}
+.ve-switch input::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--t1); transition: transform 0.15s;
+}
+.ve-switch input:checked { background: var(--accent); }
+.ve-switch input:checked::after { transform: translateX(18px); background: var(--accent-ink); }
+.ve-switch input:disabled { opacity: 0.4; }
+
+.ve-tracks { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ve-track { --tc: var(--accent); padding: 8px 10px; border: 1px solid var(--border-hi); border-radius: 10px; background: var(--surface);
+  box-shadow: inset 4px 0 0 var(--tc); }
+.ve-track.muted-track { opacity: 0.55; }
+.ve-track-top { display: flex; align-items: center; gap: 8px; }
+.ve-swatch { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--tc); }
+.ve-track-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ve-track-name small { font-size: 12px; font-weight: 500; color: var(--t2); }
+.ve-tbtn { flex: none; min-width: 52px; min-height: 36px; padding: 0 10px; border: 1px solid var(--border-hi); border-radius: 8px;
+  background: var(--bg); color: var(--t2); font-size: 14px; font-weight: 700; }
+.ve-tbtn.on { border-color: var(--accent); background: var(--accent-lo); color: var(--accent); }
+.ve-tbtn.mute { min-width: 42px; }
+.ve-tbtn.mute.on { border-color: var(--red); background: var(--red-lo); color: var(--red); }
+.ve-track-vol { display: grid; grid-template-columns: 1fr 48px; align-items: center; gap: 10px; margin-top: 4px; }
+.ve-track-vol input { width: 100%; height: 30px; margin: 0; accent-color: var(--tc); }
+.ve-track-vol .mono { font-size: 13px; color: var(--t2); text-align: right; }
+
+.ve-presets { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.ve-preset { display: flex; align-items: center; gap: 6px; min-height: 52px; border-bottom: 1px solid var(--border); }
+.ve-preset-name { flex: 1; min-width: 0; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+
+.ve-summary { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
+  font-size: 14px; color: var(--t2); }
+.ve-summary div:first-child { color: var(--t1); font-weight: 600; }
+.ve-path { margin: -6px 0 0; overflow-wrap: anywhere; }
+.btn:disabled { opacity: 0.45; }
+.ve-jobs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ve-job { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-hi); border-radius: 10px; background: var(--surface); }
+.ve-job-main { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.ve-job-name { font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.ve-job .state { font-size: 13px; }
+
+.ve-tabs { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); padding: 4px 6px calc(4px + var(--safe-bottom)); background: var(--bg); }
+.ve-tabs button { min-height: 44px; border: 0; border-radius: 10px; background: transparent; color: var(--t2); font-size: 15px; font-weight: 700; }
+.ve-tabs button[aria-selected="true"] { background: var(--accent-lo); color: var(--accent); }
