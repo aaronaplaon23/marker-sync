@@ -468,8 +468,8 @@ code, .mono { font-family: var(--mono); }
 .ed-clip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 15px; min-height: 36px; }
 .ed-clip .mono { font-weight: 600; margin-right: auto; }
 
-/* Script workspace: the video, a Therefore / But · Script · Markers switch,
-   and the doc being written. */
+/* Script workspace: the video, a But / Therefore · Script · Markers switch,
+   and the doc being written (But red, Therefore green). */
 .script-top { flex: none; }
 .sv-transport { display: grid; grid-template-columns: 1.3fr 1fr 1.3fr 1fr; align-items: center; gap: 8px; padding: 8px 12px 0; }
 .sv-transport .t-now { font-size: 17px; }
@@ -485,20 +485,38 @@ code, .mono { font-family: var(--mono); }
   padding: 0 12px calc(8px + var(--safe-bottom)); }
 .script-tools { display: flex; gap: 6px; flex-wrap: wrap; }
 .script-tools .btn { padding: 0 10px; }
-.script-text {
-  flex: 1;
-  min-height: 140px;
-  width: 100%;
-  resize: none;
+/* The doc and its highlight layer share one box: same padding, border, font
+   and wrapping (and a scroll bar gutter where there is one), so a line wraps
+   at the same word in both. The layer's text is invisible; only the marks
+   show, behind the textarea's own (transparent-backed) text. */
+.st-ed { position: relative; flex: 1; min-height: 140px; display: flex; border-radius: 10px; background: var(--bg); }
+.script-text, .st-hl {
   padding: 10px 12px;
   border: 1px solid var(--border-hi);
   border-radius: 10px;
-  background: var(--bg);
-  color: var(--t1);
   font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  scrollbar-gutter: stable;
+}
+.script-text {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  background: transparent;
+  color: var(--t1);
   -webkit-appearance: none;
 }
 .script-text:focus { outline: none; border-color: var(--accent); }
+.st-hl { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: transparent; border-color: transparent; }
+/* iOS's own 3px inside a textarea, both sides (see highlight() in app.js). */
+.ios .st-hl { padding-left: 15px; padding-right: 15px; }
+.st-hl mark { color: transparent; border-radius: 4px; }
+/* Widened sideways so the mark still covers the word if iOS's inset differs. */
+.st-hl .hl-but { background: rgba(239, 68, 68, 0.55); box-shadow: -3px 0 0 rgba(239, 68, 68, 0.55), 3px 0 0 rgba(239, 68, 68, 0.55); }
+.st-hl .hl-therefore { background: rgba(63, 185, 80, 0.5); box-shadow: -3px 0 0 rgba(63, 185, 80, 0.5), 3px 0 0 rgba(63, 185, 80, 0.5); }
 .script-status { margin: 0; min-height: 18px; }
 .script-screen.writing { height: var(--vvh, 100dvh); }
 .script-screen.writing .sv-transport,

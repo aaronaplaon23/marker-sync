@@ -923,9 +923,9 @@
       const meta = el("span", "clip-meta");
       if (script) {
         const f = c.files["script.md"];
-        const tb = c.files["therefore-but.md"];
+        const tb = c.files["but-therefore.md"];
         meta.append(el("span", `state ${f || tb ? "state-ready" : "state-none"}`, f ? `Script, edited ${fmtWhen(f.server_modified)}`
-          : tb ? `Therefore / But, edited ${fmtWhen(tb.server_modified)}` : "No script yet"));
+          : tb ? `But / Therefore, edited ${fmtWhen(tb.server_modified)}` : "No script yet"));
       } else {
         meta.append(el("span", `state ${st.cls}`, st.text(c)));
       }
@@ -3564,8 +3564,8 @@
   /* ---------- script ----------
      The Script screen (Script on the home screen): a clip's two docs, next to
      its markers in Dropbox and the same files as the clip editor's 5 · Script
-     tab. The Therefore / But (therefore-but.md) is the beats written from the
-     markers, "Therefore: …" / "But: …" pairs; the script (script.md) is
+     tab. The But / Therefore (but-therefore.md) is the beats written from the
+     markers, "But: …" / "Therefore: …" pairs; the script (script.md) is
      written from those. Each is saved a moment after you stop typing (through
      the outbox, so offline is fine), and picked up from the PC on the 10 s
      check while you're not typing in it. Neither can be typed in until it has
@@ -3573,12 +3573,32 @@
      flips between the two and the clip's markers: tap one to watch it, + to
      put it in the doc you came from. */
   const DOCS = {
-    beats: { file: "therefore-but.md", box: $("#beats-text"), name: "the Therefore / But" },
+    beats: { file: "but-therefore.md", box: $("#beats-text"), name: "the But / Therefore" },
     script: { file: "script.md", box: $("#script-text"), name: "the script" },
   };
   const docState = () => ({ rev: null, dirty: false, timer: 0, loading: false, loaded: false, note: "" });
   const SCR = { view: "script", doc: "script", clipId: null, docs: { beats: docState(), script: docState() } };
   const docPath = (d) => `${S.clip.folder}/${DOCS[d].file}`;
+
+  /* "But:" red and "Therefore:" green at the start of a line, in both docs.
+     A textarea can't color its own text, so each sits on a layer (.st-hl)
+     with the same box, font and wrapping holding the same text invisibly,
+     the two words marked; it follows the box's scroll. iOS keeps 3px of
+     padding inside a textarea on each side that CSS can't remove, so the
+     layer gets the same 3px there. */
+  const HL_RE = /^([ \t]*)(but|therefore)([ \t]*:)/gim;
+  if (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
+    document.documentElement.classList.add("ios");
+  }
+
+  function highlight(box) {
+    const hl = box.previousElementSibling;
+    const esc = box.value.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]);
+    // The trailing space keeps a last empty line as tall as the textarea's.
+    hl.innerHTML = esc.replace(HL_RE, (_, sp, word, colon) =>
+      `${sp}<mark class="hl-${word.toLowerCase()}">${word}${colon}</mark>`) + " ";
+    hl.scrollTop = box.scrollTop;
+  }
   const docBox = (d = SCR.doc) => DOCS[d].box;
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -3593,7 +3613,7 @@
     }
     $("#script-view").hidden = v === "markers";
     $("#sv-markers-view").hidden = v !== "markers";
-    for (const d of Object.keys(DOCS)) DOCS[d].box.hidden = d !== SCR.doc;
+    for (const d of Object.keys(DOCS)) DOCS[d].box.parentElement.hidden = d !== SCR.doc;
     $("#sc-beat").hidden = SCR.doc !== "beats";
     $("#sc-outline").hidden = SCR.doc !== "script";
     const video = S.clip && hasVideo(S.clip);
@@ -3646,6 +3666,7 @@
         Object.assign(SCR.docs[d], docState(), { note: `Loading ${DOCS[d].name}` });
         scriptReady(d, false);
         DOCS[d].box.value = "";
+        highlight(DOCS[d].box);
       }
       scriptStatus();
       scriptCaret();
@@ -3671,6 +3692,7 @@
     const pending = outbox.ops.filter((o) => o.kind === "put" && o.path.toLowerCase() === path.toLowerCase()).pop();
     if (pending && !st.dirty && document.activeElement !== box) {
       if (box.value !== pending.text) box.value = pending.text;
+      highlight(box);
       docLoaded(d);
       return;
     }
@@ -3687,6 +3709,7 @@
       if (st.dirty || (document.activeElement === box && box.value !== text && st.rev)) return;
       st.rev = meta.rev;
       if (box.value !== text) box.value = text;
+      highlight(box);
       docLoaded(d);
     } catch (e) {
       if (e instanceof AuthError) return needSignIn();
@@ -3720,7 +3743,9 @@
   if (window.visualViewport) window.visualViewport.addEventListener("resize", fitViewport);
   for (const d of Object.keys(DOCS)) {
     const box = DOCS[d].box;
+    box.addEventListener("scroll", () => { box.previousElementSibling.scrollTop = box.scrollTop; });
     box.addEventListener("input", () => {
+      highlight(box);
       const st = SCR.docs[d];
       st.dirty = true;
       clearTimeout(st.timer);
@@ -3782,8 +3807,8 @@
     return true;
   }
 
-  /* In the Therefore / But, a marker fills the cursor's line when it's an
-     empty "Therefore:" or "But:" (lay out the beat, then point it at the
+  /* In the But / Therefore, a marker fills the cursor's line when it's an
+     empty "But:" or "Therefore:" (lay out the beat, then point it at the
      moment); anywhere else it's a line of its own. */
   function addMarkerTo(d, m) {
     if (!docReady(d)) return false;
@@ -3801,9 +3826,9 @@
     return insertScript(scriptLine(m) + "\n", d);
   }
 
-  /* ---------- Therefore / But ----------
+  /* ---------- But / Therefore ----------
      Same rules as the clip editor's: beats are blocks of lines, a blank line
-     or a new "Therefore:" starts the next one. */
+     or a new "But:" starts the next one. */
   const BEAT_RE = /^(\s*)(therefore|but)\s*:\s*/i;
 
   function parseBeats(text) {
@@ -3817,7 +3842,7 @@
       }
       const hit = BEAT_RE.exec(line);
       const kind = hit ? hit[2].toLowerCase() : "text";
-      if (!cur || kind === "therefore") {
+      if (!cur || kind === "but") {
         cur = { kinds: [], lines: [] };
         beats.push(cur);
       }
@@ -3829,9 +3854,9 @@
 
   const beatCount = (beats) => beats.filter((b) => b.kinds.some((k) => k !== "text")).length;
 
-  /* Enter after a Therefore line starts its But (or goes to it, if it's
-     there), Enter after a But starts the next beat, Enter on an empty
-     Therefore / But clears it. Text after the cursor: a plain Enter. */
+  /* Enter after a But line starts its Therefore (or goes to it, if it's
+     there), Enter after a Therefore starts the next beat, Enter on an empty
+     But / Therefore clears it. Text after the cursor: a plain Enter. */
   DOCS.beats.box.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
     const box = DOCS.beats.box;
@@ -3848,21 +3873,21 @@
       typeInto(box, "", a, b);
       return;
     }
-    if (hit[2].toLowerCase() === "but") {
-      typeInto(box, "\n\nTherefore: ", pos, pos);
+    if (hit[2].toLowerCase() === "therefore") {
+      typeInto(box, "\n\nBut: ", pos, pos);
       return;
     }
-    const butEnd = b < v.length ? lineAt(v, b + 1)[1] : -1;
-    if (butEnd >= 0 && /^\s*but\s*:/i.test(v.slice(b + 1, butEnd))) {
-      box.setSelectionRange(butEnd, butEnd);
+    const thenEnd = b < v.length ? lineAt(v, b + 1)[1] : -1;
+    if (thenEnd >= 0 && /^\s*therefore\s*:/i.test(v.slice(b + 1, thenEnd))) {
+      box.setSelectionRange(thenEnd, thenEnd);
       scriptCaret();
       return;
     }
-    typeInto(box, "\nBut: ", pos, pos);
+    typeInto(box, "\nTherefore: ", pos, pos);
   });
 
   // + Beat: a new empty pair after the beat the cursor is in, the cursor on
-  // its Therefore.
+  // its But.
   $("#sc-beat").addEventListener("click", () => {
     if (!docReady("beats")) return;
     const box = DOCS.beats.box;
@@ -3871,7 +3896,7 @@
     while (end < v.length) {
       const nextEnd = lineAt(v, end + 1)[1];
       const next = v.slice(end + 1, nextEnd);
-      if (!next.trim() || /^\s*therefore\s*:/i.test(next)) break;
+      if (!next.trim() || /^\s*but\s*:/i.test(next)) break;
       end = nextEnd;
     }
     const before = v.slice(0, end);
@@ -3879,8 +3904,8 @@
     const lead = !before.trim() ? "" : before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
     const tail = !after.trim() || after.startsWith("\n\n") ? "" : "\n";
     box.focus();
-    typeInto(box, `${lead}Therefore: \nBut: ${tail}`, end, end);
-    const at = end + lead.length + "Therefore: ".length;
+    typeInto(box, `${lead}But: \nTherefore: ${tail}`, end, end);
+    const at = end + lead.length + "But: ".length;
     box.setSelectionRange(at, at);
     scriptCaret();
   });
@@ -3895,12 +3920,12 @@
     }
     addMarkerTo(SCR.doc, best);
   });
-  // The script's Outline: every beat of the Therefore / But.
+  // The script's Outline: every beat of the But / Therefore.
   $("#sc-outline").addEventListener("click", () => {
     if (!docReady("beats")) return;
     const beats = parseBeats(DOCS.beats.box.value);
     if (!beats.length) {
-      toast("No Therefore / But yet. Write it first, from the markers.", { label: "Open", run: () => setView("beats") });
+      toast("No But / Therefore yet. Write it first, from the markers.", { label: "Open", run: () => setView("beats") });
       return;
     }
     insertScript(beats.map((b) => b.text).join("\n\n") + "\n", "script");
