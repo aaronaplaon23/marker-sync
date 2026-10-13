@@ -3578,7 +3578,8 @@
     beats: { file: "but-therefore.md", box: $("#beats-text"), name: "the But / Therefore" },
     script: { file: "script.md", box: $("#script-text"), name: "the script" },
   };
-  const docState = () => ({ rev: null, dirty: false, timer: 0, loading: false, loaded: false, note: "" });
+  const docState = () => ({ rev: null, dirty: false, timer: 0, loading: false, loaded: false, note: "",
+    paint: [], prev: "" });   // paint: color highlights [start, end, color]; prev: the text they're on
   const SCR = { view: "script", doc: "script", clipId: null, docs: { beats: docState(), script: docState() } };
   const docPath = (d) => `${S.clip.folder}/${DOCS[d].file}`;
 
@@ -3599,6 +3600,85 @@
   const MK_RE = /\[(\d{1,2}(?::\d{2}){1,2}(?:\.\d+)?)(?:\s+to\s+\d{1,2}(?::\d{2}){1,2}(?:\.\d+)?)?\]/g;
   const clockSecs = (s) => s.split(":").reduce((acc, p) => acc * 60 + Number(p), 0);
   const escHtml = (s) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+
+  /* Color highlights, put on in the clip editor (select, right-click, a
+     color). Shown here on the same layer, and kept: they're saved in the doc's
+     file as a comment line at its end, which stays out of the text box, and
+     typing here moves them along with the text. */
+  const PAINT = ["yellow", "orange", "red", "green", "blue", "purple"];
+  const PAINT_RE = /\n<!-- clip editor highlights: (\[[^\n]*\]) -->\n?$/;
+
+  // Line ends as the text box has them (\r\n reads as \n there).
+  function splitDoc(file) {
+    file = (file || "").replace(/\r\n?/g, "\n");
+    const hit = PAINT_RE.exec(file);
+    if (!hit) return [file, []];
+    let list;
+    try { list = JSON.parse(hit[1]); } catch { return [file, []]; }
+    const text = file.slice(0, hit.index);
+    return [text, cleanPaint(list, text.length)];
+  }
+
+  const joinDoc = (text, paint) =>
+    paint.length ? `${text}\n<!-- clip editor highlights: ${JSON.stringify(paint)} -->\n` : text;
+
+  // In order, inside the text, apart, and two of a color that touch made one.
+  function cleanPaint(list, len) {
+    const rs = [];
+    for (const r of Array.isArray(list) ? list : []) {
+      if (!Array.isArray(r) || !Number.isInteger(r[0]) || !Number.isInteger(r[1]) || !PAINT.includes(r[2])) continue;
+      const a = Math.max(0, r[0]);
+      const b = Math.min(len, r[1]);
+      if (b > a) rs.push([a, b, r[2]]);
+    }
+    rs.sort((x, y) => x[0] - y[0]);
+    const out = [];
+    for (const r of rs) {
+      const last = out[out.length - 1];
+      if (last && r[0] < last[1]) {
+        if (r[1] <= last[1]) continue;
+        r[0] = last[1];
+      }
+      if (last && last[1] === r[0] && last[2] === r[2]) last[1] = r[1];
+      else out.push(r);
+    }
+    return out;
+  }
+
+  // What an edit changed: [start, old end, new end]. The text after the
+  // cursor is what's untouched; else the longest common ends.
+  function editSpan(old, now, caret) {
+    let suf = -1;
+    if (caret != null && caret <= now.length) {
+      const tail = now.slice(caret);
+      if (tail.length <= old.length && old.endsWith(tail)) suf = tail.length;
+    }
+    if (suf < 0) {
+      suf = 0;
+      const most = Math.min(old.length, now.length);
+      while (suf < most && old[old.length - 1 - suf] === now[now.length - 1 - suf]) suf++;
+    }
+    const most = Math.min(old.length, now.length) - suf;
+    let p = 0;
+    while (p < most && old[p] === now[p]) p++;
+    return [p, old.length - suf, now.length - suf];
+  }
+
+  // Typed inside one: in it. Just before or after: not. Over its start or
+  // end (a selection replaced): the new text keeps the color.
+  function paintEdit(d) {
+    const st = SCR.docs[d];
+    const box = DOCS[d].box;
+    const old = st.prev;
+    const now = box.value;
+    st.prev = now;
+    if (!st.paint.length || old === now) return;
+    const [p, oldEnd, newEnd] = editSpan(old, now, box.selectionEnd);
+    const delta = newEnd - oldEnd;
+    const start = (x) => (x < p ? x : x === p ? (oldEnd === p ? newEnd : p) : x < oldEnd ? newEnd : x + delta);
+    const end = (x) => (x <= p ? x : x < oldEnd ? p : x + delta);
+    st.paint = cleanPaint(st.paint.map(([a, b, c]) => [start(a), end(b), c]), now.length);
+  }
 
   function highlight(box) {
     const hl = box.previousElementSibling;
@@ -3622,14 +3702,32 @@
       spans.push([m.index, end, `<mark class="hl-mk" data-t="${clockSecs(m[1])}">`]);
     }
     spans.sort((x, y) => x[0] - y[0]);
-    let html = "", at = 0;
-    for (const [a, b, tag] of spans) {
-      if (a < at) continue;   // a [time] inside a marker's note
-      html += escHtml(v.slice(at, a)) + tag + escHtml(v.slice(a, b)) + "</mark>";
-      at = b;
+    const marks = [];
+    let at = 0;
+    for (const sp of spans) {
+      if (sp[0] < at) continue;   // a [time] inside a marker's note
+      marks.push(sp);
+      at = sp[1];
+    }
+    // Color highlights go around the marks: the text is cut wherever either
+    // starts or ends, and each piece gets the ones it's in.
+    const paint = SCR.docs[box === DOCS.beats.box ? "beats" : "script"].paint;
+    const cuts = [...new Set([0, v.length, ...marks.flatMap((x) => [x[0], x[1]]), ...paint.flatMap((r) => [r[0], r[1]])])]
+      .filter((x) => x <= v.length).sort((x, y) => x - y);
+    let html = "";
+    let mi = 0;
+    let pi = 0;
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const a = cuts[i];
+      while (mi < marks.length && marks[mi][1] <= a) mi++;
+      while (pi < paint.length && paint[pi][1] <= a) pi++;
+      let piece = escHtml(v.slice(a, cuts[i + 1]));
+      if (marks[mi] && marks[mi][0] <= a) piece = marks[mi][2] + piece + "</mark>";
+      if (paint[pi] && paint[pi][0] <= a) piece = `<span class="pt pt-${paint[pi][2]}">${piece}</span>`;
+      html += piece;
     }
     // The trailing space keeps a last empty line as tall as the textarea's.
-    hl.innerHTML = html + escHtml(v.slice(at)) + " ";
+    hl.innerHTML = html + " ";
     hl.scrollTop = box.scrollTop;
   }
   const docBox = (d = SCR.doc) => DOCS[d].box;
@@ -3724,7 +3822,9 @@
     const path = docPath(d);
     const pending = outbox.ops.filter((o) => o.kind === "put" && o.path.toLowerCase() === path.toLowerCase()).pop();
     if (pending && !st.dirty && document.activeElement !== box) {
-      if (box.value !== pending.text) box.value = pending.text;
+      const [text, paint] = splitDoc(pending.text);
+      if (box.value !== text) box.value = text;
+      Object.assign(st, { paint, prev: box.value });
       highlight(box);
       docLoaded(d);
       return;
@@ -3737,11 +3837,12 @@
         docLoaded(d);
         return;
       }
-      const text = await readText(meta);
+      const [text, paint] = splitDoc(await readText(meta));
       if (S.clip !== c) return;
       if (st.dirty || (document.activeElement === box && box.value !== text && st.rev)) return;
       st.rev = meta.rev;
       if (box.value !== text) box.value = text;
+      Object.assign(st, { paint, prev: box.value });
       highlight(box);
       docLoaded(d);
     } catch (e) {
@@ -3758,7 +3859,7 @@
     clearTimeout(st.timer);
     if (!st.dirty || !S.clip || SCR.clipId !== S.clip.id) return;
     st.dirty = false;
-    outbox.put(docPath(d), DOCS[d].box.value);
+    outbox.put(docPath(d), joinDoc(DOCS[d].box.value, st.paint));
     if (d === SCR.doc) scriptStatus();
   }
 
@@ -3778,6 +3879,7 @@
     const box = DOCS[d].box;
     box.addEventListener("scroll", () => { box.previousElementSibling.scrollTop = box.scrollTop; });
     box.addEventListener("input", () => {
+      paintEdit(d);
       highlight(box);
       const st = SCR.docs[d];
       st.dirty = true;
