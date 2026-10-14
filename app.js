@@ -3586,13 +3586,42 @@
   /* "But:" red and "Therefore:" green at the start of a line, in both docs.
      A textarea can't color its own text, so each sits on a layer (.st-hl)
      with the same box, font and wrapping holding the same text invisibly,
-     the two words marked; it follows the box's scroll. iOS keeps 3px of
-     padding inside a textarea on each side that CSS can't remove, so the
-     layer gets the same 3px there. */
+     the two words marked; it follows the box's scroll. */
   const HL_RE = /^([ \t]*)(but|therefore)([ \t]*:)/gim;
-  if (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
-    document.documentElement.classList.add("ios");
+
+  /* The layer has to wrap at the same word as the textarea, or every long
+     line that wraps differently pushes the marks below it down a row. Some
+     iOS versions keep padding inside a textarea that CSS can't remove (3px a
+     side on older ones, none on current ones), so it's measured, not
+     guessed: a hidden textarea and layer wrap the same text, and the layer
+     takes the extra padding at which the two come out the same height. The
+     text is long runs of one narrow letter, which break letter by letter,
+     so a few px less room is always a row more. */
+  function measureInset() {
+    const ed = document.createElement("div");
+    ed.className = "st-ed";
+    ed.style.cssText = "position: absolute; left: -9999px; top: 0; width: 180px; height: 60px; visibility: hidden;";
+    const hl = document.createElement("div");
+    hl.className = "st-hl";
+    const ta = document.createElement("textarea");
+    ta.className = "script-text";
+    ta.tabIndex = -1;
+    ta.setAttribute("aria-hidden", "true");
+    ed.append(hl, ta);
+    document.body.append(ed);
+    const text = ["i", "l", "1", "t", "f"].map((c) => c.repeat(3000)).join("\n");
+    ta.value = text;
+    hl.textContent = text + " ";
+    let inset = 0;
+    for (const px of [0, 3, 1, 2, 4, 5, 6]) {
+      hl.style.setProperty("--ta-inset", `${px}px`);
+      if (hl.scrollHeight === ta.scrollHeight) { inset = px; break; }
+    }
+    ed.remove();
+    document.documentElement.style.setProperty("--ta-inset", `${inset}px`);
+    return inset;
   }
+  measureInset();
 
   /* A marker in a doc ("[0:40] dies to lava") is underlined yellow and is a
      link: a tap is Go to for it. Any [time] or [time to time] is one; the

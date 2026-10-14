@@ -511,8 +511,9 @@ code, .mono { font-family: var(--mono); }
 }
 .script-text:focus { outline: none; border-color: var(--accent); }
 .st-hl { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: transparent; border-color: transparent; }
-/* iOS's own 3px inside a textarea, both sides (see highlight() in app.js). */
-.ios .st-hl { padding-left: 15px; padding-right: 15px; }
+/* Padding a textarea keeps inside that CSS can't remove, on some iOS
+   versions: measured at start (measureInset in app.js). */
+.st-hl { padding-left: calc(12px + var(--ta-inset, 0px)); padding-right: calc(12px + var(--ta-inset, 0px)); }
 .st-hl mark { color: transparent; border-radius: 4px; }
 /* Widened sideways so the mark still covers the word if iOS's inset differs. */
 .st-hl .hl-but { background: rgba(239, 68, 68, 0.55); box-shadow: -3px 0 0 rgba(239, 68, 68, 0.55), 3px 0 0 rgba(239, 68, 68, 0.55); }
