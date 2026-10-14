@@ -519,6 +519,8 @@ code, .mono { font-family: var(--mono); }
 .st-hl .hl-but { background: rgba(239, 68, 68, 0.55); box-shadow: -3px 0 0 rgba(239, 68, 68, 0.55), 3px 0 0 rgba(239, 68, 68, 0.55); }
 .st-hl .hl-therefore { background: rgba(63, 185, 80, 0.5); box-shadow: -3px 0 0 rgba(63, 185, 80, 0.5), 3px 0 0 rgba(63, 185, 80, 0.5); }
 /* A marker put in: a tap goes to its moment in the video. */
+/* A story arc's header ("# " line): a band, the text box has one size. */
+.st-hl .hb { background: rgba(34, 211, 238, 0.18); border-radius: 3px; }
 /* Color highlights from the clip editor (see paintEdit in app.js). */
 .st-hl .pt { border-radius: 3px; }
 .st-hl .pt-yellow { background: rgba(250, 204, 21, 0.36); }
