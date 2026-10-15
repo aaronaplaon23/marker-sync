@@ -3722,19 +3722,39 @@
     }
     const heads = [];     // [start, end]
     for (const m of v.matchAll(HEAD_RE)) heads.push([m.index, m.index + m[0].length]);
-    const lines = new Map();   // "[0:40]" -> that time's marker lines
+    const lines = new Map();   // "[0:40]" -> that time's markers, [line, marker]
     for (const m of S.clip ? S.markers : []) {
       const l = scriptLine(m);
       const key = l.slice(0, l.indexOf("]") + 1);
-      lines.set(key, [...(lines.get(key) || []), l]);
+      lines.set(key, [...(lines.get(key) || []), [l, m]]);
     }
-    for (const m of v.matchAll(MK_RE)) {
+    // A marker's tags (" (FM TT)" after its note) get its marker's color: on
+    // its line, before the next marker's time, even with the note changed.
+    const tagRs = [];     // [start, end, color id]
+    const found = [...v.matchAll(MK_RE)];
+    found.forEach((m, n) => {
       let end = m.index + m[0].length;
-      for (const l of lines.get(m[0]) || []) {
-        if (m.index + l.length > end && v.startsWith(l, m.index)) end = m.index + l.length;
+      const same = lines.get(m[0]) || [];
+      let mk = same.length ? same[0][1] : null;
+      for (const [l, x] of same) {
+        if (m.index + l.length > end && v.startsWith(l, m.index)) { end = m.index + l.length; mk = x; }
       }
-      spans.push([m.index, end, `<mark class="hl-mk" data-t="${clockSecs(m[1])}">`]);
-    }
+      // data-i: the link's number (its tags, a color, cut it in pieces)
+      spans.push([m.index, end, `<mark class="hl-mk" data-i="${n}" data-t="${clockSecs(m[1])}">`]);
+      const sfx = mk ? markerTags(mk).filter((t) => t.suffix).map((t) => t.suffix).join(" ") : "";
+      if (!sfx) return;
+      const eol = v.indexOf("\n", m.index);
+      const next = found[n + 1];
+      const stop = Math.min(eol < 0 ? v.length : eol, next ? next.index : Infinity);
+      const group = ` (${sfx})`;
+      const at = v.lastIndexOf(group, stop - group.length);
+      if (at < m.index + m[0].length) return;
+      let p = at + 2;
+      for (const s of sfx.split(" ")) {
+        tagRs.push([p, p + s.length, cleanColor(mk.color) || "default"]);
+        p += s.length + 1;
+      }
+    });
     spans.sort((x, y) => x[0] - y[0]);
     const marks = [];
     let at = 0;
@@ -3747,19 +3767,22 @@
     // starts or ends, and each piece gets the ones it's in.
     const paint = SCR.docs[box === DOCS.beats.box ? "beats" : "script"].paint;
     const ends = (list) => list.flatMap((x) => [x[0], x[1]]);
-    const cuts = [...new Set([0, v.length, ...ends(marks), ...ends(paint), ...ends(heads)])]
+    const cuts = [...new Set([0, v.length, ...ends(marks), ...ends(paint), ...ends(heads), ...ends(tagRs)])]
       .filter((x) => x <= v.length).sort((x, y) => x - y);
     let html = "";
     let mi = 0;
     let pi = 0;
     let hi = 0;
+    let ti = 0;
     for (let i = 0; i + 1 < cuts.length; i++) {
       const a = cuts[i];
       while (mi < marks.length && marks[mi][1] <= a) mi++;
+      while (ti < tagRs.length && tagRs[ti][1] <= a) ti++;
       while (pi < paint.length && paint[pi][1] <= a) pi++;
       while (hi < heads.length && heads[hi][1] <= a) hi++;
       let piece = escHtml(v.slice(a, cuts[i + 1]));
       if (marks[mi] && marks[mi][0] <= a) piece = marks[mi][2] + piece + "</mark>";
+      if (tagRs[ti] && tagRs[ti][0] <= a) piece = `<span class="mt mt-${tagRs[ti][2]}">${piece}</span>`;
       if (paint[pi] && paint[pi][0] <= a) piece = `<span class="pt pt-${paint[pi][2]}">${piece}</span>`;
       if (heads[hi] && heads[hi][0] <= a) piece = `<span class="hb">${piece}</span>`;
       html += piece;
