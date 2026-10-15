@@ -3724,12 +3724,14 @@
     for (const m of v.matchAll(HEAD_RE)) heads.push([m.index, m.index + m[0].length]);
     const lines = new Map();   // "[0:40]" -> that time's markers, [line, marker]
     for (const m of S.clip ? S.markers : []) {
-      const l = scriptLine(m);
-      const key = l.slice(0, l.indexOf("]") + 1);
-      lines.set(key, [...(lines.get(key) || []), [l, m]]);
+      for (const l of new Set([scriptLine(m), scriptLine(m, true)])) {
+        const key = l.slice(0, l.indexOf("]") + 1);
+        lines.set(key, [...(lines.get(key) || []), [l, m]]);
+      }
     }
-    // A marker's tags (" (FM TT)" after its note) get its marker's color: on
-    // its line, before the next marker's time, even with the note changed.
+    // A marker's tags (" [FM TT]" after its note, or " (FM TT)" from before)
+    // get its marker's color: on its line, before the next marker's time,
+    // even with the note changed.
     const tagRs = [];     // [start, end, color id]
     const found = [...v.matchAll(MK_RE)];
     found.forEach((m, n) => {
@@ -3746,14 +3748,10 @@
       const eol = v.indexOf("\n", m.index);
       const next = found[n + 1];
       const stop = Math.min(eol < 0 ? v.length : eol, next ? next.index : Infinity);
-      const group = ` (${sfx})`;
-      const at = v.lastIndexOf(group, stop - group.length);
+      let at = -1;
+      for (const g of [` [${sfx}]`, ` (${sfx})`]) at = Math.max(at, v.lastIndexOf(g, stop - g.length));
       if (at < m.index + m[0].length) return;
-      let p = at + 2;
-      for (const s of sfx.split(" ")) {
-        tagRs.push([p, p + s.length, cleanColor(mk.color) || "default"]);
-        p += s.length + 1;
-      }
+      tagRs.push([at + 1, at + 3 + sfx.length, cleanColor(mk.color) || "default"]);
     });
     spans.sort((x, y) => x[0] - y[0]);
     const marks = [];
@@ -3960,11 +3958,13 @@
     for (const n of ["click", "keyup", "select"]) box.addEventListener(n, scriptCaret);
   }
 
-  function scriptLine(m) {
+  // A marker as put in a doc: "[0:40] dies to lava [FM TT]". Its tags were in
+  // ( ) before 2026-10-14 (old: that form, to still know those lines).
+  function scriptLine(m, old = false) {
     const r = mRegion(m);
     const when = r ? `${fmtTime(r[0])} to ${fmtTime(r[1])}` : fmtTime(mClip(m));
     const sfx = markerTags(m).filter((t) => t.suffix).map((t) => t.suffix).join(" ");
-    return `[${when}] ${m.note || "(no note)"}${sfx ? ` (${sfx})` : ""}`;
+    return `[${when}] ${m.note || "(no note)"}${sfx ? (old ? ` (${sfx})` : ` [${sfx}]`) : ""}`;
   }
 
   function typeInto(box, text, a, b) {
