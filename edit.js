@@ -287,6 +287,10 @@
   let guideMode = store.get("ve.guide", "");
   if (guideMode !== "all" && !GUIDES[guideMode]) guideMode = "";
 
+  // Portrait's frame heights: 9:16, 4:5 and 1:1, as on the PC. Anything else
+  // (a preset from before 4:5, with no out_h) lands on 9:16.
+  const OUT_HEIGHTS = [1920, 1350, 1080];
+  function cleanOutH(v) { v = Number(v); return OUT_HEIGHTS.includes(v) ? v : 1920; }
   function outW() { return OUT_W[E.layout]; }
   function outHpx() { return E.layout === "portrait" ? E.outH : OUT_H[E.layout]; }
   function outRatio() { return outW() / outHpx(); }
@@ -433,7 +437,7 @@
     $("#ve-facecam").checked = E.facecam;
     $("#ve-main").value = String(Math.round(E.mainScale * 100));
     $("#ve-main-val").textContent = `${Math.round(E.mainScale * 100)}%`;
-    $("#ve-45").checked = E.outH === 1350;
+    for (const b of $$("#ve-ratio-seg button")) b.setAttribute("aria-pressed", String(Number(b.dataset.h) === E.outH));
     $("#ve-divider").value = String(Math.round(E.divider * 100));
     $("#ve-divider-val").textContent = `${Math.round(E.divider * 100)}%`;
     $("#ve-wm").checked = E.watermark.enabled;
@@ -461,8 +465,9 @@
     $("#ve-main-val").textContent = `${e.target.value}%`;
     changed();
   });
-  $("#ve-45").addEventListener("change", (e) => {
-    E.outH = e.target.checked ? 1350 : 1920;
+  for (const b of $$("#ve-ratio-seg button")) b.addEventListener("click", () => {
+    E.outH = cleanOutH(b.dataset.h);
+    for (const x of $$("#ve-ratio-seg button")) x.setAttribute("aria-pressed", String(x === b));
     syncOutFrame();
     changed();
   });
@@ -1139,7 +1144,7 @@
     E.crops = JSON.parse(JSON.stringify(p.crops || {}));
     E.divider = typeof p.divider === "number" ? p.divider : 0.35;
     E.mainScale = Math.max(1, typeof p.main_scale === "number" ? p.main_scale : 1);
-    E.outH = p.out_h === 1350 ? 1350 : 1920;
+    E.outH = cleanOutH(p.out_h);
     if (p.face_box) E.faceBox = { ...E.faceBox, ...p.face_box };
     const legacy = LEGACY_LAYOUTS[p.layout];
     if (legacy && E.crops.blur && !E.crops.facecamMain) E.crops.facecamMain = { ...E.crops.blur };

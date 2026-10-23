@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=202610141923">
+<link rel="stylesheet" href="style.css?v=202610230314">
 <title>Marker Sync</title>
 </head>
 <body>
@@ -216,7 +216,7 @@
   </div>
 </section>
 
-<!-- Edit: the clips waiting in the PC's Stage 1 folder (the clip editor's 2 Â· Edit list) -->
+<!-- Edit: the clips waiting in the PC's Stage 1 folder (the clip editor's 2 · Edit list) -->
 <section id="screen-vlist" class="screen" hidden>
   <header class="bar">
     <button id="vl-home" class="btn btn-ghost bar-back" type="button">Home</button>
@@ -230,7 +230,7 @@
   <div id="vl-list" class="vl-list"></div>
   <div id="vl-empty" class="empty-state" hidden>
     <p class="empty-title">No clips to edit</p>
-    <p class="muted">Clips you cut into the PC's Stage 1 folder show up here, the same ones as the clip editor's <b>2 Â· Edit</b> tab.</p>
+    <p class="muted">Clips you cut into the PC's Stage 1 folder show up here, the same ones as the clip editor's <b>2 · Edit</b> tab.</p>
   </div>
   <footer class="clips-foot">
     <span id="vl-pc" class="pc-status"></span>
@@ -296,7 +296,14 @@
         <label class="ve-switch"><input type="checkbox" id="ve-blur" checked><span>Blur background</span></label>
         <label class="ve-switch"><input type="checkbox" id="ve-facecam"><span>Facecam overlay</span></label>
         <label class="ve-slider"><span>Main size</span><input type="range" id="ve-main" min="100" max="300" value="100"><span id="ve-main-val" class="mono">100%</span></label>
-        <label class="ve-switch"><input type="checkbox" id="ve-45"><span>4:5 instead of 9:16 (1080x1350)</span></label>
+        <div class="ve-row">
+          <span class="muted small">Ratio</span>
+          <div id="ve-ratio-seg" class="seg" role="group" aria-label="Frame shape">
+            <button type="button" data-h="1920">9:16</button>
+            <button type="button" data-h="1350">4:5</button>
+            <button type="button" data-h="1080">1:1</button>
+          </div>
+        </div>
       </div>
       <label id="ve-stacked" class="ve-slider"><span>Facecam height</span><input type="range" id="ve-divider" min="20" max="55" value="35"><span id="ve-divider-val" class="mono">35%</span></label>
       <div class="ve-row">
@@ -445,9 +452,9 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js?v=202610141923"></script>
+<script src="config.js?v=202610230314"></script>
 <script src="https://player.twitch.tv/js/embed/v1.js"></script>
-<script src="app.js?v=202610141923"></script>
-<script src="edit.js?v=202610141923"></script>
+<script src="app.js?v=202610230314"></script>
+<script src="edit.js?v=202610230314"></script>
 </body>
 </html>
