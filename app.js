@@ -848,7 +848,7 @@
     for (const c of list) describeClip(c);
     return list
       .filter((c) => c.state !== "empty")
-      .sort((a, b) => String(b.created || "").localeCompare(String(a.created || "")));
+      .sort((a, b) => (b.live ? 1 : 0) - (a.live ? 1 : 0) || String(b.created || "").localeCompare(String(a.created || "")));
   }
 
   function describeClip(c) {
@@ -856,6 +856,7 @@
     const s = c.status;
     if (m && m.pc_only) {
       c.state = "pc";             // marked in the clip editor, not sent to the phone
+      c.live = !!m.live;          // OBS still recording it, marked from the Stream Deck
       c.name = stripExt(m.source_name) || c.id;
       c.duration = m.duration;
       c.created = m.created;
@@ -907,7 +908,9 @@
     const ul = $("#clips-list");
     ul.replaceChildren();
     const script = listFor === "script";
-    const shown = clips.filter((c) => script || c.state !== "pc");
+    // A recording still being made shows in both: its markers can be fixed
+    // on the Script screen's Markers side while the stream goes on.
+    const shown = clips.filter((c) => script || c.state !== "pc" || c.live);
     $("#clips-empty").hidden = !clipsLoaded || shown.length > 0;
     $("#clips-empty-text").replaceChildren(...(script
       ? ["Mark a clip here or in the clip editor's ", el("b", null, "Markers"), " tab on the PC, and it shows up here."]
@@ -915,13 +918,15 @@
     for (const c of shown) {
       const st = CLIP_STATES[c.state] || CLIP_STATES.missing;
       const card = button("clip-card", null, () => {
-        if (script) openScript(c);
+        if (script || c.live) openScript(c);
         else if (c.state === "ready") openClip(c);
         else toast(st.hint);
       });
       card.append(el("span", "clip-name", c.name));
       const meta = el("span", "clip-meta");
-      if (script) {
+      if (c.live) {
+        meta.append(el("span", "state state-live", "Live, recording"));
+      } else if (script) {
         const f = c.files["script.md"];
         const tb = c.files["but-therefore.md"];
         meta.append(el("span", `state ${f || tb ? "state-ready" : "state-none"}`, f ? `Script, edited ${fmtWhen(f.server_modified)}`
@@ -931,10 +936,10 @@
       }
       if (c.duration) meta.append(el("span", null, fmtTime(c.duration)));
       if (c.markerCount) meta.append(el("span", null, `${c.markerCount} marker${c.markerCount === 1 ? "" : "s"}`));
-      if (script && !hasVideo(c)) meta.append(el("span", null, c.state === "pc" ? "marked on the PC, no video here" : "no video yet"));
+      if (script && !hasVideo(c) && !c.live) meta.append(el("span", null, c.state === "pc" ? "marked on the PC, no video here" : "no video yet"));
       card.append(meta);
       if (!script && c.state === "failed" && c.error) card.append(el("span", "clip-error", c.error));
-      if (!script && c.state !== "ready") card.classList.add("clip-card-wait");
+      if (!script && c.state !== "ready" && !c.live) card.classList.add("clip-card-wait");
       const li = el("li");
       li.append(card);
       ul.append(li);
@@ -1833,12 +1838,14 @@
     $("#script-title").textContent = c.name;
     for (const id of ["#script-video", "#sv-transport", "#sc-insert", "#sc-goto"]) $(id).hidden = !video;
     $("#sv-novideo").hidden = video;
-    $("#sv-novideo").textContent = c.state === "pc"
-      ? "Marked on the PC, so its video is there, not here. The markers and both scripts are here."
-      : "This clip's video isn't on the phone yet. The markers and both scripts are.";
+    $("#sv-novideo").textContent = c.live
+      ? "Still recording. Stream Deck markers show up here within about 10 seconds; tap Edit to fix one."
+      : c.state === "pc"
+        ? "Marked on the PC, so its video is there, not here. The markers and both scripts are here."
+        : "This clip's video isn't on the phone yet. The markers and both scripts are.";
     if (video) startClipVideo(c);
     else destroyPlayer();
-    setView(c.files["script.md"] ? "script" : "beats");
+    setView(c.live ? "markers" : c.files["script.md"] ? "script" : "beats");
     renderMarkers("Loading markers");
     requestDraw();
     ensureTags().catch(() => {});
@@ -1912,7 +1919,7 @@
   $("#script-back").addEventListener("click", () => {
     for (const d of Object.keys(DOCS)) DOCS[d].box.blur();
     leaveClip();
-    showClips("script");
+    showClips();                       // the list it came from: a live recording opens here from Markers too
   });
   playBtn.addEventListener("click", togglePlay);
   $("#sv-play").addEventListener("click", togglePlay);
@@ -3364,9 +3371,11 @@
       const at = fmtTime(mClip(m), true);
       if (sv) {
         const li = markerRow(m, mode ? () => watchMarker(m) : null);
+        const edit = button("mrow-edit", "Edit", () => openEditor(m, false));
+        edit.setAttribute("aria-label", `Edit marker at ${at}`);
         const add = button("mrow-edit sv-add", "+", () => addToScript(m));
         add.setAttribute("aria-label", `Put the marker at ${at} in ${DOCS[SCR.doc].name}`);
-        li.append(add);
+        li.append(edit, add);
         ul.append(li);
         continue;
       }

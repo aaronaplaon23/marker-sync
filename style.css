@@ -197,6 +197,9 @@ code, .mono { font-family: var(--mono); }
 .state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .state-ready { color: var(--green); }
 .state-busy { color: var(--marker); }
+.state-live { color: var(--red); }
+.state-live::before { animation: live-dot 1.6s ease-in-out infinite; }
+@keyframes live-dot { 50% { opacity: 0.3; } }
 .state-failed { color: var(--red); }
 .clip-error { font-size: 13px; color: var(--red); overflow-wrap: anywhere; }
 
